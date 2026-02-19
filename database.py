@@ -197,7 +197,7 @@ def get_collection_stats() -> dict:
             """
             SELECT
                 COUNT(DISTINCT col.card_id)        AS unique_cards,
-                SUM(col.quantity)                  AS total_cards,
+                COALESCE(SUM(col.quantity), 0)     AS total_cards,
                 COUNT(DISTINCT c.set_id)           AS unique_sets
             FROM collection col
             JOIN cards c ON c.id = col.card_id
