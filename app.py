@@ -1,6 +1,13 @@
 """Packbot - Pokemon TCG Card Scanner
 
 Flask web application serving both the REST API and the frontend SPA.
+
+Authentication
+--------------
+Most endpoints are usable without authentication.  To scope data to a specific
+user, pass an ``X-Api-Key`` header (or ``api_key`` query param) obtained from
+``POST /api/users``.  When a valid key is supplied the request is transparently
+associated with that user's collection and scan history.
 """
 
 import os
@@ -10,6 +17,7 @@ load_dotenv()
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+from typing import Optional
 
 import database as db
 import scanner
@@ -19,6 +27,22 @@ app = Flask(__name__, static_folder="static")
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-in-production")
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+
+# ---------------------------------------------------------------------------
+# Auth helper
+# ---------------------------------------------------------------------------
+
+def _current_user_id() -> Optional[int]:
+    """Return the user_id for the current request, or None if unauthenticated.
+
+    Checks ``X-Api-Key`` header first, then ``api_key`` query param.
+    """
+    key = request.headers.get("X-Api-Key") or request.args.get("api_key", "")
+    if not key:
+        return None
+    user = db.get_user_by_api_key(key)
+    return user["id"] if user else None
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +102,7 @@ def scan_image():
             method=result["method"],
             confidence=result["confidence"],
             raw_input=f"name={pokemon_name} set={set_code} num={card_number}",
+            user_id=_current_user_id(),
         )
 
     return jsonify(result)
@@ -103,6 +128,7 @@ def scan_text():
             method=result["method"],
             confidence=result["confidence"],
             raw_input=text,
+            user_id=_current_user_id(),
         )
 
     return jsonify(result)
@@ -167,16 +193,20 @@ def sets_list():
 
 @app.route("/api/collection", methods=["GET"])
 def collection_list():
-    """Get the user's collection with optional filtering.
+    """Get the collection with optional filtering.
 
     Query params: search, set_id, page, page_size
+    Pass X-Api-Key header to scope results to the authenticated user.
     """
     search = request.args.get("search", "")
     set_id = request.args.get("set_id", "")
     page = int(request.args.get("page", 1))
     page_size = min(int(request.args.get("page_size", 50)), 200)
 
-    result = db.get_collection(search=search, set_id=set_id, page=page, page_size=page_size)
+    result = db.get_collection(
+        search=search, set_id=set_id, user_id=_current_user_id(),
+        page=page, page_size=page_size,
+    )
     return jsonify(result)
 
 
@@ -190,6 +220,8 @@ def collection_add():
       foil      – boolean (default false)
       quantity  – integer (default 1)
       notes     – optional string
+
+    Pass X-Api-Key header to associate the entry with a specific user.
     """
     data = request.get_json(force=True, silent=True) or {}
     card_id = data.get("card_id", "").strip()
@@ -208,6 +240,7 @@ def collection_add():
         foil=bool(data.get("foil", False)),
         quantity=int(data.get("quantity", 1)),
         notes=data.get("notes", ""),
+        user_id=_current_user_id(),
     )
     return jsonify({"data": entry}), 201
 
@@ -223,8 +256,8 @@ def collection_remove(entry_id: int):
 
 @app.route("/api/collection/stats")
 def collection_stats():
-    """Return aggregate stats for the collection."""
-    return jsonify({"data": db.get_collection_stats()})
+    """Return aggregate stats, scoped to the authenticated user if key provided."""
+    return jsonify({"data": db.get_collection_stats(user_id=_current_user_id())})
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +266,56 @@ def collection_stats():
 
 @app.route("/api/scans")
 def scan_history():
-    """Return recent scan history."""
+    """Return recent scan history, scoped to authenticated user if key provided."""
     limit = min(int(request.args.get("limit", 50)), 200)
-    return jsonify({"data": db.get_scan_history(limit=limit)})
+    return jsonify({"data": db.get_scan_history(limit=limit, user_id=_current_user_id())})
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+@app.route("/api/users", methods=["POST"])
+def users_create():
+    """Register a new user.
+
+    Expects JSON body:
+      username – required, unique
+      email    – optional
+
+    Returns the created user including their api_key.  Store this key –
+    it is the credential for all subsequent requests.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    username = data.get("username", "").strip()
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+
+    if db.get_user_by_username(username):
+        return jsonify({"error": f"Username '{username}' is already taken"}), 409
+
+    user = db.create_user(username=username, email=data.get("email"))
+    return jsonify({"data": user}), 201
+
+
+@app.route("/api/users/<int:user_id>", methods=["GET"])
+def users_get(user_id: int):
+    """Fetch a user profile by ID.  api_key is omitted for privacy."""
+    user = db.get_user(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    # Don't expose the api_key in GET responses
+    user.pop("api_key", None)
+    return jsonify({"data": user})
+
+
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+def users_delete(user_id: int):
+    """Delete a user and cascade-delete their collection and scan history."""
+    removed = db.delete_user(user_id)
+    if not removed:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------

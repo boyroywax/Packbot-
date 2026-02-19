@@ -1,81 +1,254 @@
-"""SQLite database layer for Packbot collection management."""
+"""Database layer for Packbot – supports SQLite (dev) and PostgreSQL (production).
 
-import os
-import sqlite3
+Backend is selected automatically:
+  • Set DATABASE_URL=postgresql://... to use PostgreSQL
+  • Otherwise SQLite is used (DATABASE_PATH, default packbot.db)
+"""
+
 import json
+import os
+import secrets
+import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Optional
 
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "packbot.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+DATABASE_PATH: str = os.getenv("DATABASE_PATH", "packbot.db")
 
+
+# ---------------------------------------------------------------------------
+# Backend detection & helpers
+# ---------------------------------------------------------------------------
+
+def _is_pg() -> bool:
+    return bool(DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")))
+
+
+def _q(query: str) -> str:
+    """Adapt ? placeholders to %s for PostgreSQL."""
+    return query.replace("?", "%s") if _is_pg() else query
+
+
+def _exec(conn, query: str, params=()):
+    """Execute *query* against *conn*, adapting placeholders automatically.
+
+    Returns a cursor whose .fetchone() / .fetchall() / .rowcount work the
+    same way regardless of the underlying driver.
+    """
+    if _is_pg():
+        cur = conn.cursor()
+        cur.execute(_q(query), params)
+        return cur
+    return conn.execute(query, params)
+
+
+# ---------------------------------------------------------------------------
+# Connection context manager
+# ---------------------------------------------------------------------------
 
 @contextmanager
 def get_db():
-    """Context manager that yields a database connection."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    """Yield a live database connection; commit on success, rollback on error."""
+    if _is_pg():
+        import psycopg2
+        import psycopg2.extras
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Schema DDL  (separate lists so we avoid SQLite-only / PG-only syntax)
+# ---------------------------------------------------------------------------
+
+_SQLITE_DDL = [
+    """CREATE TABLE IF NOT EXISTS users (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        username    TEXT NOT NULL UNIQUE,
+        email       TEXT UNIQUE,
+        api_key     TEXT NOT NULL UNIQUE,
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS cards (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        set_id      TEXT NOT NULL,
+        set_name    TEXT NOT NULL,
+        number      TEXT NOT NULL,
+        rarity      TEXT,
+        image_small TEXT,
+        image_large TEXT,
+        data_json   TEXT,
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS collection (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id     TEXT NOT NULL REFERENCES cards(id),
+        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        condition   TEXT NOT NULL DEFAULT 'NM',
+        foil        INTEGER NOT NULL DEFAULT 0,
+        quantity    INTEGER NOT NULL DEFAULT 1,
+        notes       TEXT,
+        added_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    # Partial unique indexes so anonymous and per-user entries coexist
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_no_user
+        ON collection(card_id, condition, foil) WHERE user_id IS NULL""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_user
+        ON collection(card_id, condition, foil, user_id) WHERE user_id IS NOT NULL""",
+    "CREATE INDEX IF NOT EXISTS idx_collection_card_id ON collection(card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collection_user_id ON collection(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)",
+    "CREATE INDEX IF NOT EXISTS idx_cards_set_id ON cards(set_id)",
+    """CREATE TABLE IF NOT EXISTS scan_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id     TEXT REFERENCES cards(id),
+        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        method      TEXT,
+        confidence  REAL,
+        raw_input   TEXT,
+        scanned_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+]
+
+_PG_DDL = [
+    """CREATE TABLE IF NOT EXISTS users (
+        id          SERIAL PRIMARY KEY,
+        username    TEXT NOT NULL UNIQUE,
+        email       TEXT UNIQUE,
+        api_key     TEXT NOT NULL UNIQUE,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS cards (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        set_id      TEXT NOT NULL,
+        set_name    TEXT NOT NULL,
+        number      TEXT NOT NULL,
+        rarity      TEXT,
+        image_small TEXT,
+        image_large TEXT,
+        data_json   TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS collection (
+        id          SERIAL PRIMARY KEY,
+        card_id     TEXT NOT NULL REFERENCES cards(id),
+        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        condition   TEXT NOT NULL DEFAULT 'NM',
+        foil        INTEGER NOT NULL DEFAULT 0,
+        quantity    INTEGER NOT NULL DEFAULT 1,
+        notes       TEXT,
+        added_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_no_user
+        ON collection(card_id, condition, foil) WHERE user_id IS NULL""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_user
+        ON collection(card_id, condition, foil, user_id) WHERE user_id IS NOT NULL""",
+    "CREATE INDEX IF NOT EXISTS idx_collection_card_id ON collection(card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collection_user_id ON collection(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)",
+    "CREATE INDEX IF NOT EXISTS idx_cards_set_id ON cards(set_id)",
+    """CREATE TABLE IF NOT EXISTS scan_history (
+        id          SERIAL PRIMARY KEY,
+        card_id     TEXT REFERENCES cards(id),
+        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        method      TEXT,
+        confidence  REAL,
+        raw_input   TEXT,
+        scanned_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+]
 
 
 def init_db():
-    """Create database schema if it doesn't exist."""
+    """Create all tables and indexes if they don't exist yet."""
+    ddl = _PG_DDL if _is_pg() else _SQLITE_DDL
     with get_db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS cards (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                set_id      TEXT NOT NULL,
-                set_name    TEXT NOT NULL,
-                number      TEXT NOT NULL,
-                rarity      TEXT,
-                image_small TEXT,
-                image_large TEXT,
-                data_json   TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+        for stmt in ddl:
+            _exec(conn, stmt)
 
-            CREATE TABLE IF NOT EXISTS collection (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                card_id     TEXT NOT NULL REFERENCES cards(id),
-                condition   TEXT NOT NULL DEFAULT 'NM',
-                foil        INTEGER NOT NULL DEFAULT 0,
-                quantity    INTEGER NOT NULL DEFAULT 1,
-                notes       TEXT,
-                added_at    TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(card_id, condition, foil)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_collection_card_id ON collection(card_id);
-            CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name);
-            CREATE INDEX IF NOT EXISTS idx_cards_set_id ON cards(set_id);
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
 
-            CREATE TABLE IF NOT EXISTS scan_history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                card_id     TEXT REFERENCES cards(id),
-                method      TEXT,
-                confidence  REAL,
-                raw_input   TEXT,
-                scanned_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-        """)
+def create_user(username: str, email: Optional[str] = None) -> dict:
+    """Create a new user and return the full row (including generated api_key)."""
+    api_key = secrets.token_urlsafe(32)
+    with get_db() as conn:
+        if _is_pg():
+            cur = _exec(
+                conn,
+                "INSERT INTO users (username, email, api_key) VALUES (?, ?, ?) RETURNING *",
+                (username, email, api_key),
+            )
+            row = cur.fetchone()
+        else:
+            _exec(conn, "INSERT INTO users (username, email, api_key) VALUES (?, ?, ?)",
+                  (username, email, api_key))
+            row = _exec(conn, "SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    return dict(row) if row else {}
 
+
+def get_user(user_id: int) -> Optional[dict]:
+    """Fetch a user by primary key."""
+    with get_db() as conn:
+        row = _exec(conn, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_username(username: str) -> Optional[dict]:
+    """Fetch a user by username."""
+    with get_db() as conn:
+        row = _exec(conn, "SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_api_key(api_key: str) -> Optional[dict]:
+    """Fetch a user by their API key."""
+    with get_db() as conn:
+        row = _exec(conn, "SELECT * FROM users WHERE api_key = ?", (api_key,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_user(user_id: int) -> bool:
+    """Delete a user (collection entries cascade-delete via FK)."""
+    with get_db() as conn:
+        cur = _exec(conn, "DELETE FROM users WHERE id = ?", (user_id,))
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Cards
+# ---------------------------------------------------------------------------
 
 def upsert_card(card_data: dict) -> str:
     """Insert or update a card record from API data. Returns card id."""
     card_id = card_data["id"]
     with get_db() as conn:
-        conn.execute(
+        _exec(
+            conn,
             """
             INSERT INTO cards (id, name, set_id, set_name, number, rarity,
                                image_small, image_large, data_json)
@@ -103,44 +276,77 @@ def upsert_card(card_data: dict) -> str:
     return card_id
 
 
+# ---------------------------------------------------------------------------
+# Collection
+# ---------------------------------------------------------------------------
+
 def add_to_collection(
     card_id: str,
     condition: str = "NM",
     foil: bool = False,
     quantity: int = 1,
     notes: str = "",
+    user_id: Optional[int] = None,
 ) -> dict:
     """Add or increment a card in the collection.
 
-    Returns the collection row as a dict.
+    When *user_id* is provided the entry is scoped to that user, otherwise it
+    goes into the shared (anonymous) pool.  Returns the updated row.
     """
     with get_db() as conn:
-        conn.execute(
-            """
-            INSERT INTO collection (card_id, condition, foil, quantity, notes)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(card_id, condition, foil) DO UPDATE SET
-                quantity = quantity + excluded.quantity,
-                notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
-            """,
-            (card_id, condition, int(foil), quantity, notes or ""),
-        )
-        row = conn.execute(
-            "SELECT * FROM collection WHERE card_id=? AND condition=? AND foil=?",
-            (card_id, condition, int(foil)),
-        ).fetchone()
+        if user_id is None:
+            _exec(
+                conn,
+                """
+                INSERT INTO collection (card_id, condition, foil, quantity, notes, user_id)
+                VALUES (?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(card_id, condition, foil) WHERE user_id IS NULL
+                DO UPDATE SET
+                    quantity = quantity + excluded.quantity,
+                    notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
+                """,
+                (card_id, condition, int(foil), quantity, notes or ""),
+            )
+            row = _exec(
+                conn,
+                "SELECT * FROM collection WHERE card_id=? AND condition=? AND foil=? AND user_id IS NULL",
+                (card_id, condition, int(foil)),
+            ).fetchone()
+        else:
+            _exec(
+                conn,
+                """
+                INSERT INTO collection (card_id, condition, foil, quantity, notes, user_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(card_id, condition, foil, user_id) WHERE user_id IS NOT NULL
+                DO UPDATE SET
+                    quantity = quantity + excluded.quantity,
+                    notes    = CASE WHEN excluded.notes != '' THEN excluded.notes ELSE notes END
+                """,
+                (card_id, condition, int(foil), quantity, notes or "", user_id),
+            )
+            row = _exec(
+                conn,
+                "SELECT * FROM collection WHERE card_id=? AND condition=? AND foil=? AND user_id=?",
+                (card_id, condition, int(foil), user_id),
+            ).fetchone()
     return dict(row) if row else {}
 
 
 def get_collection(
     search: str = "",
     set_id: str = "",
+    user_id: Optional[int] = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
-    """Fetch collection with optional filtering and pagination."""
+    """Fetch collection with optional filtering and pagination.
+
+    When *user_id* is provided the results are scoped to that user.
+    When omitted (anonymous request) only the shared pool (user_id IS NULL) is returned.
+    """
     offset = (page - 1) * page_size
-    filters = []
+    filters: list = []
     params: list = []
 
     if search:
@@ -149,18 +355,26 @@ def get_collection(
     if set_id:
         filters.append("c.set_id = ?")
         params.append(set_id)
+    if user_id is not None:
+        filters.append("col.user_id = ?")
+        params.append(user_id)
+    else:
+        filters.append("col.user_id IS NULL")
 
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
 
     with get_db() as conn:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM collection col JOIN cards c ON c.id=col.card_id {where}",
+        total_row = _exec(
+            conn,
+            f"SELECT COUNT(*) AS cnt FROM collection col JOIN cards c ON c.id=col.card_id {where}",
             params,
-        ).fetchone()[0]
+        ).fetchone()
+        total = (total_row["cnt"] if isinstance(total_row, dict) else total_row[0]) if total_row else 0
 
-        rows = conn.execute(
+        rows = _exec(
+            conn,
             f"""
-            SELECT col.id, col.card_id, col.condition, col.foil, col.quantity,
+            SELECT col.id, col.card_id, col.user_id, col.condition, col.foil, col.quantity,
                    col.notes, col.added_at,
                    c.name, c.set_id, c.set_name, c.number, c.rarity,
                    c.image_small, c.image_large
@@ -184,54 +398,67 @@ def get_collection(
 def remove_from_collection(collection_id: int) -> bool:
     """Remove a collection entry by its row id."""
     with get_db() as conn:
-        cursor = conn.execute(
-            "DELETE FROM collection WHERE id=?", (collection_id,)
-        )
-    return cursor.rowcount > 0
+        cur = _exec(conn, "DELETE FROM collection WHERE id=?", (collection_id,))
+        return cur.rowcount > 0
 
 
-def get_collection_stats() -> dict:
-    """Return aggregate stats for the collection."""
+def get_collection_stats(user_id: Optional[int] = None) -> dict:
+    """Return aggregate stats scoped to *user_id*, or to the anonymous pool when omitted."""
+    where = "WHERE col.user_id = ?" if user_id is not None else "WHERE col.user_id IS NULL"
+    params = (user_id,) if user_id is not None else ()
     with get_db() as conn:
-        row = conn.execute(
-            """
+        row = _exec(
+            conn,
+            f"""
             SELECT
-                COUNT(DISTINCT col.card_id)        AS unique_cards,
-                COALESCE(SUM(col.quantity), 0)     AS total_cards,
-                COUNT(DISTINCT c.set_id)           AS unique_sets
+                COUNT(DISTINCT col.card_id)    AS unique_cards,
+                COALESCE(SUM(col.quantity), 0) AS total_cards,
+                COUNT(DISTINCT c.set_id)       AS unique_sets
             FROM collection col
             JOIN cards c ON c.id = col.card_id
-            """
+            {where}
+            """,
+            params,
         ).fetchone()
     return dict(row) if row else {"unique_cards": 0, "total_cards": 0, "unique_sets": 0}
 
+
+# ---------------------------------------------------------------------------
+# Scan history
+# ---------------------------------------------------------------------------
 
 def log_scan(
     card_id: Optional[str],
     method: str,
     confidence: float = 0.0,
     raw_input: str = "",
+    user_id: Optional[int] = None,
 ):
     """Log a scan event to history."""
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO scan_history (card_id, method, confidence, raw_input) VALUES (?,?,?,?)",
-            (card_id, method, confidence, raw_input),
+        _exec(
+            conn,
+            "INSERT INTO scan_history (card_id, method, confidence, raw_input, user_id) VALUES (?,?,?,?,?)",
+            (card_id, method, confidence, raw_input, user_id),
         )
 
 
-def get_scan_history(limit: int = 50) -> list:
-    """Return recent scan history."""
+def get_scan_history(limit: int = 50, user_id: Optional[int] = None) -> list:
+    """Return recent scan history scoped to *user_id*, or the anonymous pool when omitted."""
+    where = "WHERE sh.user_id = ?" if user_id is not None else "WHERE sh.user_id IS NULL"
+    params: tuple = (user_id, limit) if user_id is not None else (limit,)
     with get_db() as conn:
-        rows = conn.execute(
-            """
-            SELECT sh.id, sh.card_id, sh.method, sh.confidence, sh.scanned_at,
+        rows = _exec(
+            conn,
+            f"""
+            SELECT sh.id, sh.card_id, sh.user_id, sh.method, sh.confidence, sh.scanned_at,
                    c.name, c.set_name, c.number, c.image_small
             FROM scan_history sh
             LEFT JOIN cards c ON c.id = sh.card_id
+            {where}
             ORDER BY sh.scanned_at DESC
             LIMIT ?
             """,
-            (limit,),
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
