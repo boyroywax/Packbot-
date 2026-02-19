@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Packbot – Pokemon TCG Scanner</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>&#9670; Packbot</h1>
+    <p class="tagline">Pokemon TCG Card Scanner &amp; Collection Manager</p>
+  </header>
+
+  <nav>
+    <button class="nav-btn active" data-tab="scanner">Scanner</button>
+    <button class="nav-btn" data-tab="search">Search</button>
+    <button class="nav-btn" data-tab="collection">Collection</button>
+    <button class="nav-btn" data-tab="history">History</button>
+  </nav>
+
+  <!-- ==================== SCANNER TAB ==================== -->
+  <section id="tab-scanner" class="tab active">
+    <div class="scanner-layout">
+      <div class="camera-panel">
+        <div class="video-wrapper">
+          <video id="camera-feed" autoplay playsinline></video>
+          <canvas id="capture-canvas" style="display:none"></canvas>
+          <div class="card-guide"></div>
+        </div>
+        <div class="camera-controls">
+          <button id="btn-start-camera" class="btn-primary">Start Camera</button>
+          <button id="btn-capture" class="btn-capture" disabled>&#128247; Capture</button>
+          <button id="btn-stop-camera" disabled>Stop Camera</button>
+        </div>
+        <div class="hint-panel">
+          <h3>Manual Hints (optional)</h3>
+          <div class="hint-row">
+            <input id="hint-name" type="text" placeholder="Pokemon name (e.g. Charizard)" />
+          </div>
+          <div class="hint-row">
+            <input id="hint-set" type="text" placeholder="Set code (e.g. base1, SVI)" />
+            <input id="hint-number" type="text" placeholder="Card # (e.g. 4)" />
+          </div>
+          <button id="btn-manual-lookup" class="btn-secondary">&#128270; Lookup by Hints</button>
+        </div>
+      </div>
+
+      <div class="result-panel">
+        <div id="scan-result-placeholder" class="placeholder-msg">
+          <span>Capture a card or use hints to identify it</span>
+        </div>
+        <div id="scan-result" style="display:none">
+          <div class="card-preview">
+            <img id="result-img" src="" alt="Card image" />
+          </div>
+          <div class="card-info">
+            <h2 id="result-name"></h2>
+            <p id="result-set"></p>
+            <p id="result-number"></p>
+            <p id="result-rarity"></p>
+            <p class="confidence-badge" id="result-confidence"></p>
+          </div>
+          <div class="candidates-section" id="candidates-section" style="display:none">
+            <h4>Other matches</h4>
+            <div id="candidates-list"></div>
+          </div>
+          <div class="add-to-collection-form">
+            <h3>Add to Collection</h3>
+            <div class="form-row">
+              <label>Condition
+                <select id="add-condition">
+                  <option value="NM">NM (Near Mint)</option>
+                  <option value="LP">LP (Lightly Played)</option>
+                  <option value="MP">MP (Moderately Played)</option>
+                  <option value="HP">HP (Heavily Played)</option>
+                  <option value="DMG">DMG (Damaged)</option>
+                </select>
+              </label>
+              <label>Qty
+                <input id="add-qty" type="number" min="1" value="1" style="width:60px" />
+              </label>
+              <label class="foil-label">
+                <input id="add-foil" type="checkbox" /> Foil / Holo
+              </label>
+            </div>
+            <input id="add-notes" type="text" placeholder="Notes (optional)" style="width:100%;margin-top:6px" />
+            <button id="btn-add-collection" class="btn-primary" style="margin-top:8px">+ Add to Collection</button>
+            <div id="add-feedback" class="feedback"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== SEARCH TAB ==================== -->
+  <section id="tab-search" class="tab">
+    <div class="search-bar">
+      <input id="search-input" type="text" placeholder="Search by Pokémon name, set, or TCG query..." />
+      <button id="btn-search" class="btn-primary">Search</button>
+    </div>
+    <div class="search-hint">
+      <small>Advanced: use TCG query syntax – e.g. <code>name:Pikachu set.id:base1 rarity:Rare</code></small>
+    </div>
+    <div id="search-results" class="card-grid"></div>
+    <div id="search-pagination" class="pagination"></div>
+  </section>
+
+  <!-- ==================== COLLECTION TAB ==================== -->
+  <section id="tab-collection" class="tab">
+    <div class="collection-header">
+      <div id="collection-stats" class="stats-bar"></div>
+      <div class="collection-filters">
+        <input id="col-search" type="text" placeholder="Filter by name..." />
+        <input id="col-set-filter" type="text" placeholder="Filter by set ID..." />
+        <button id="btn-col-filter" class="btn-secondary">Filter</button>
+      </div>
+    </div>
+    <div id="collection-list" class="collection-table-wrapper">
+      <p class="placeholder-msg">Your collection is empty. Start scanning cards!</p>
+    </div>
+    <div id="col-pagination" class="pagination"></div>
+  </section>
+
+  <!-- ==================== HISTORY TAB ==================== -->
+  <section id="tab-history" class="tab">
+    <h2>Recent Scans</h2>
+    <div id="history-list" class="history-list">
+      <p class="placeholder-msg">No scans yet.</p>
+    </div>
+  </section>
+
+  <!-- Card detail modal -->
+  <div id="card-modal" class="modal" style="display:none">
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-content">
+      <button class="modal-close" id="modal-close">&#10005;</button>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
