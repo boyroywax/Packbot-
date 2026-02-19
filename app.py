@@ -4,10 +4,17 @@ Flask web application serving both the REST API and the frontend SPA.
 
 Authentication
 --------------
-Most endpoints are usable without authentication.  To scope data to a specific
-user, pass an ``X-Api-Key`` header (or ``api_key`` query param) obtained from
-``POST /api/users``.  When a valid key is supplied the request is transparently
-associated with that user's collection and scan history.
+Two auth methods are supported (checked in order):
+
+1. Session token (recommended) – obtained from ``POST /api/sessions``:
+   ``Authorization: Bearer <token>``
+
+2. Permanent API key – obtained from ``POST /api/users``:
+   ``X-Api-Key: <key>``  or  ``?api_key=<key>`` query param
+
+When a valid credential is supplied the request is scoped to that user's
+collection and scan history.  Unauthenticated requests see the shared
+anonymous pool.
 """
 
 import os
@@ -30,19 +37,50 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
 # ---------------------------------------------------------------------------
-# Auth helper
+# Auth helpers
 # ---------------------------------------------------------------------------
 
-def _current_user_id() -> Optional[int]:
-    """Return the user_id for the current request, or None if unauthenticated.
+def _resolve_auth() -> Optional[dict]:
+    """Resolve the authenticated user for the current request.
 
-    Checks ``X-Api-Key`` header first, then ``api_key`` query param.
+    Checks in order:
+      1. ``Authorization: Bearer <session-token>``
+      2. ``X-Api-Key`` header  or  ``api_key`` query param
+    Returns the user dict (without password_hash) or None.
     """
+    # 1. Bearer session token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            session = db.get_session(token)
+            if session:
+                user = db.get_user(session["user_id"])
+                if user:
+                    user.pop("password_hash", None)
+                    return user
+
+    # 2. Permanent API key
     key = request.headers.get("X-Api-Key") or request.args.get("api_key", "")
-    if not key:
-        return None
-    user = db.get_user_by_api_key(key)
+    if key:
+        user = db.get_user_by_api_key(key)
+        if user:
+            user.pop("password_hash", None)
+            return user
+
+    return None
+
+
+def _current_user_id() -> Optional[int]:
+    """Thin wrapper – returns just the user id (or None)."""
+    user = _resolve_auth()
     return user["id"] if user else None
+
+
+def _bearer_token() -> Optional[str]:
+    """Extract the Bearer token from the current request, if present."""
+    h = request.headers.get("Authorization", "")
+    return h[7:].strip() if h.startswith("Bearer ") else None
 
 
 # ---------------------------------------------------------------------------
@@ -282,9 +320,9 @@ def users_create():
     Expects JSON body:
       username – required, unique
       email    – optional
+      password – optional; required to use POST /api/sessions (login)
 
-    Returns the created user including their api_key.  Store this key –
-    it is the credential for all subsequent requests.
+    Returns the created user including their api_key.
     """
     data = request.get_json(force=True, silent=True) or {}
     username = data.get("username", "").strip()
@@ -294,18 +332,23 @@ def users_create():
     if db.get_user_by_username(username):
         return jsonify({"error": f"Username '{username}' is already taken"}), 409
 
-    user = db.create_user(username=username, email=data.get("email"))
+    user = db.create_user(
+        username=username,
+        email=data.get("email"),
+        password=data.get("password"),
+    )
+    user.pop("password_hash", None)
     return jsonify({"data": user}), 201
 
 
 @app.route("/api/users/<int:user_id>", methods=["GET"])
 def users_get(user_id: int):
-    """Fetch a user profile by ID.  api_key is omitted for privacy."""
+    """Fetch a user profile by ID."""
     user = db.get_user(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
-    # Don't expose the api_key in GET responses
     user.pop("api_key", None)
+    user.pop("password_hash", None)
     return jsonify({"data": user})
 
 
@@ -316,6 +359,91 @@ def users_delete(user_id: int):
     if not removed:
         return jsonify({"error": "User not found"}), 404
     return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Sessions  (login / logout / introspection)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/sessions", methods=["POST"])
+def sessions_login():
+    """Login with username + password and obtain a session token.
+
+    Expects JSON body: { "username": "...", "password": "..." }
+
+    Returns:
+      token      – Bearer token for subsequent requests
+      expires_at – UTC timestamp when the session expires
+      user       – public user profile (no api_key / password_hash)
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+    if not username or not password:
+        return jsonify({"error": "username and password are required"}), 400
+
+    user = db.verify_password(username, password)
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    duration = int(os.getenv("SESSION_DURATION_DAYS", 30))
+    session = db.create_session(user["id"], duration_days=duration)
+
+    user.pop("password_hash", None)
+    user.pop("api_key", None)
+    return jsonify({
+        "data": {
+            "token": session["token"],
+            "expires_at": session["expires_at"],
+            "user": user,
+        }
+    }), 201
+
+
+@app.route("/api/sessions/me", methods=["GET"])
+def sessions_me():
+    """Return the authenticated user's public profile.
+
+    Works with both Bearer session tokens and X-Api-Key.
+    Returns 401 if not authenticated.
+    """
+    user = _resolve_auth()
+    if not user:
+        return jsonify({"error": "Authentication required"}), 401
+    return jsonify({"data": user})
+
+
+@app.route("/api/sessions", methods=["GET"])
+def sessions_list():
+    """List all active sessions for the authenticated user."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+    return jsonify({"data": db.get_user_sessions(user_id)})
+
+
+@app.route("/api/sessions", methods=["DELETE"])
+def sessions_logout():
+    """Invalidate the current Bearer session token (logout).
+
+    Must be authenticated with a Bearer token; returns 400 for API-key-only
+    requests since there is no session token to invalidate.
+    """
+    token = _bearer_token()
+    if not token:
+        return jsonify({"error": "No Bearer session token to invalidate"}), 400
+    db.delete_session(token)
+    return jsonify({"success": True})
+
+
+@app.route("/api/sessions/all", methods=["DELETE"])
+def sessions_logout_all():
+    """Invalidate every active session for the authenticated user."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+    count = db.delete_all_user_sessions(user_id)
+    return jsonify({"success": True, "sessions_revoked": count})
 
 
 # ---------------------------------------------------------------------------

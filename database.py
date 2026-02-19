@@ -10,7 +10,10 @@ import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -83,11 +86,12 @@ def get_db():
 
 _SQLITE_DDL = [
     """CREATE TABLE IF NOT EXISTS users (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        username    TEXT NOT NULL UNIQUE,
-        email       TEXT UNIQUE,
-        api_key     TEXT NOT NULL UNIQUE,
-        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        username      TEXT NOT NULL UNIQUE,
+        email         TEXT UNIQUE,
+        api_key       TEXT NOT NULL UNIQUE,
+        password_hash TEXT,
+        created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS cards (
         id          TEXT PRIMARY KEY,
@@ -129,15 +133,24 @@ _SQLITE_DDL = [
         raw_input   TEXT,
         scanned_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
+    """CREATE TABLE IF NOT EXISTS sessions (
+        token       TEXT PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at  TEXT NOT NULL,
+        last_seen   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
 ]
 
 _PG_DDL = [
     """CREATE TABLE IF NOT EXISTS users (
-        id          SERIAL PRIMARY KEY,
-        username    TEXT NOT NULL UNIQUE,
-        email       TEXT UNIQUE,
-        api_key     TEXT NOT NULL UNIQUE,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        id            SERIAL PRIMARY KEY,
+        username      TEXT NOT NULL UNIQUE,
+        email         TEXT UNIQUE,
+        api_key       TEXT NOT NULL UNIQUE,
+        password_hash TEXT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS cards (
         id          TEXT PRIMARY KEY,
@@ -178,37 +191,74 @@ _PG_DDL = [
         raw_input   TEXT,
         scanned_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
+    """CREATE TABLE IF NOT EXISTS sessions (
+        token       TEXT PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at  TIMESTAMPTZ NOT NULL,
+        last_seen   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
 ]
 
 
 def init_db():
-    """Create all tables and indexes if they don't exist yet."""
+    """Create all tables and indexes if they don't exist yet.
+
+    Also runs additive migrations for columns added after the initial schema.
+    """
     ddl = _PG_DDL if _is_pg() else _SQLITE_DDL
     with get_db() as conn:
         for stmt in ddl:
             _exec(conn, stmt)
+        # Migration: add password_hash to users if missing (existing installs)
+        try:
+            _exec(conn, "ALTER TABLE users ADD COLUMN password_hash TEXT")
+        except Exception:
+            pass  # Column already exists – safe to ignore
 
 
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
 
-def create_user(username: str, email: Optional[str] = None) -> dict:
-    """Create a new user and return the full row (including generated api_key)."""
+def create_user(
+    username: str,
+    email: Optional[str] = None,
+    password: Optional[str] = None,
+) -> dict:
+    """Create a new user and return the full row (including generated api_key).
+
+    If *password* is provided it is bcrypt-hashed before storage.
+    """
     api_key = secrets.token_urlsafe(32)
+    pw_hash = generate_password_hash(password) if password else None
     with get_db() as conn:
         if _is_pg():
             cur = _exec(
                 conn,
-                "INSERT INTO users (username, email, api_key) VALUES (?, ?, ?) RETURNING *",
-                (username, email, api_key),
+                "INSERT INTO users (username, email, api_key, password_hash) VALUES (?, ?, ?, ?) RETURNING *",
+                (username, email, api_key, pw_hash),
             )
             row = cur.fetchone()
         else:
-            _exec(conn, "INSERT INTO users (username, email, api_key) VALUES (?, ?, ?)",
-                  (username, email, api_key))
+            _exec(
+                conn,
+                "INSERT INTO users (username, email, api_key, password_hash) VALUES (?, ?, ?, ?)",
+                (username, email, api_key, pw_hash),
+            )
             row = _exec(conn, "SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     return dict(row) if row else {}
+
+
+def verify_password(username: str, password: str) -> Optional[dict]:
+    """Return the user dict if *username* + *password* are valid, else None."""
+    user = get_user_by_username(username)
+    if not user or not user.get("password_hash"):
+        return None
+    if check_password_hash(user["password_hash"], password):
+        return user
+    return None
 
 
 def get_user(user_id: int) -> Optional[dict]:
@@ -237,6 +287,93 @@ def delete_user(user_id: int) -> bool:
     with get_db() as conn:
         cur = _exec(conn, "DELETE FROM users WHERE id = ?", (user_id,))
         return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+_SESSION_DURATION_DAYS: int = int(os.getenv("SESSION_DURATION_DAYS", 30))
+
+
+def _utc_str(dt: datetime) -> str:
+    """Format a datetime as a UTC string that sorts correctly in SQLite."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def create_session(user_id: int, duration_days: Optional[int] = None) -> dict:
+    """Create a new session for *user_id* and return the session row."""
+    duration_days = duration_days if duration_days is not None else _SESSION_DURATION_DAYS
+    token = secrets.token_urlsafe(32)
+    expires_at = _utc_str(datetime.now(timezone.utc) + timedelta(days=duration_days))
+    with get_db() as conn:
+        _exec(
+            conn,
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires_at),
+        )
+        row = _exec(conn, "SELECT * FROM sessions WHERE token = ?", (token,)).fetchone()
+    return dict(row) if row else {}
+
+
+def get_session(token: str) -> Optional[dict]:
+    """Return the session row if the token is valid and not expired.
+
+    Also bumps *last_seen* to the current time.
+    """
+    now = _utc_str(datetime.now(timezone.utc))
+    with get_db() as conn:
+        row = _exec(
+            conn,
+            "SELECT * FROM sessions WHERE token = ? AND expires_at > ?",
+            (token, now),
+        ).fetchone()
+        if row:
+            _exec(
+                conn,
+                "UPDATE sessions SET last_seen = ? WHERE token = ?",
+                (now, token),
+            )
+    return dict(row) if row else None
+
+
+def delete_session(token: str) -> bool:
+    """Invalidate a single session token (logout)."""
+    with get_db() as conn:
+        cur = _exec(conn, "DELETE FROM sessions WHERE token = ?", (token,))
+        return cur.rowcount > 0
+
+
+def delete_all_user_sessions(user_id: int) -> int:
+    """Invalidate all sessions for *user_id*. Returns number of rows deleted."""
+    with get_db() as conn:
+        cur = _exec(conn, "DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return cur.rowcount
+
+
+def get_user_sessions(user_id: int) -> list:
+    """Return all active (non-expired) sessions for *user_id*."""
+    now = _utc_str(datetime.now(timezone.utc))
+    with get_db() as conn:
+        rows = _exec(
+            conn,
+            """
+            SELECT token, user_id, created_at, expires_at, last_seen
+            FROM sessions
+            WHERE user_id = ? AND expires_at > ?
+            ORDER BY last_seen DESC
+            """,
+            (user_id, now),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cleanup_expired_sessions() -> int:
+    """Delete all expired sessions. Returns number of rows removed."""
+    now = _utc_str(datetime.now(timezone.utc))
+    with get_db() as conn:
+        cur = _exec(conn, "DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------------------
