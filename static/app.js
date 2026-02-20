@@ -50,6 +50,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     if (btn.dataset.tab === 'history') loadHistory();
     if (btn.dataset.tab === 'pack') initPackTab();
     if (btn.dataset.tab === 'trades') loadTradeMatches();
+    if (btn.dataset.tab === 'marketplace') loadMarketplace();
     if (btn.dataset.tab === 'messages') initMessagesTab();
   });
 });
@@ -1289,3 +1290,274 @@ async function refreshUnreadBadge() {
 // Poll unread badge every 60 s and check immediately on load
 setInterval(refreshUnreadBadge, 60_000);
 refreshUnreadBadge();
+
+// ============================================================
+// Marketplace – round-based trading pools
+// ============================================================
+
+let mpCurrentRound = null;
+let mpTimerInterval = null;
+
+el('mp-refresh-btn').addEventListener('click', loadMarketplace);
+el('mp-create-btn').addEventListener('click', () => {
+  el('mp-create-form').style.display = el('mp-create-form').style.display === 'none' ? '' : 'none';
+});
+el('mp-cancel-create').addEventListener('click', () => {
+  el('mp-create-form').style.display = 'none';
+});
+el('mp-submit-round').addEventListener('click', mpCreateRound);
+el('mp-back-btn').addEventListener('click', mpBackToList);
+el('mp-submit-offer').addEventListener('click', mpSubmitOffer);
+el('mp-settle-btn').addEventListener('click', mpSettleRound);
+el('mp-status-filter').addEventListener('change', loadMarketplace);
+
+async function loadMarketplace() {
+  const status = el('mp-status-filter').value;
+  const qs = status ? `?status=${status}` : '';
+  try {
+    const data = await apiFetch(`/api/marketplace/rounds${qs}`);
+    renderRoundsList(data.data || []);
+  } catch (_) {
+    el('mp-rounds-list').innerHTML = '<p class="placeholder-msg">Could not load rounds.</p>';
+  }
+  // Show / hide auth-dependent elements
+  el('mp-auth-msg').style.display = 'none';
+}
+
+function renderRoundsList(rounds) {
+  const container = el('mp-rounds-list');
+  if (!rounds.length) {
+    container.innerHTML = '<p class="placeholder-msg">No trading rounds found. Create one to get started!</p>';
+    return;
+  }
+  container.innerHTML = rounds.map(r => {
+    const statusCls = r.status === 'active' ? 'active' : 'settled';
+    const timerHtml = r.status === 'active'
+      ? `<span class="mp-round-timer" data-ends="${r.ends_at}"></span>`
+      : '';
+    return `
+      <div class="mp-round-card" data-id="${r.id}">
+        <div class="mp-round-info">
+          <div class="mp-round-name">${esc(r.name)}</div>
+          <div class="mp-round-meta">
+            <span>by ${esc(r.creator_username || '?')}</span>
+            <span>${r.duration_min} min</span>
+            <span>${formatDate(r.created_at)}</span>
+          </div>
+        </div>
+        ${timerHtml}
+        <span class="mp-status-badge ${statusCls}">${r.status}</span>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.mp-round-card').forEach(card => {
+    card.addEventListener('click', () => mpOpenRound(+card.dataset.id));
+  });
+  mpStartTimers();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function mpStartTimers() {
+  if (mpTimerInterval) clearInterval(mpTimerInterval);
+  mpTimerInterval = setInterval(mpTickTimers, 1000);
+  mpTickTimers();
+}
+
+function mpTickTimers() {
+  document.querySelectorAll('.mp-round-timer[data-ends], .mp-timer[data-ends]').forEach(el => {
+    const ends = new Date(el.dataset.ends);
+    const diff = ends - Date.now();
+    if (diff <= 0) {
+      el.textContent = 'Ended';
+      el.style.color = 'var(--red)';
+    } else {
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      el.textContent = `${m}m ${s.toString().padStart(2, '0')}s left`;
+    }
+  });
+}
+
+async function mpOpenRound(roundId) {
+  try {
+    const data = await apiFetch(`/api/marketplace/rounds/${roundId}`);
+    mpCurrentRound = data.data;
+    renderRoundDetail(mpCurrentRound);
+  } catch (e) {
+    alert('Could not load round: ' + e.message);
+  }
+}
+
+function renderRoundDetail(rnd) {
+  el('mp-rounds-list').style.display = 'none';
+  el('mp-create-form').style.display = 'none';
+  el('mp-round-detail').style.display = '';
+
+  el('mp-detail-name').textContent = rnd.name;
+  el('mp-detail-desc').textContent = rnd.description || '';
+
+  const statusEl = el('mp-detail-status');
+  statusEl.textContent = rnd.status;
+  statusEl.className = 'mp-status-badge ' + rnd.status;
+
+  el('mp-detail-creator').textContent = 'Created by ' + (rnd.creator_username || '?');
+  const timerEl = el('mp-detail-timer');
+  if (rnd.status === 'active') {
+    timerEl.dataset.ends = rnd.ends_at;
+    timerEl.style.display = '';
+  } else {
+    timerEl.style.display = 'none';
+  }
+
+  // Show settle button only for the creator of an active round
+  el('mp-settle-btn').style.display = (rnd.status === 'active') ? '' : 'none';
+
+  // Show offer form only for active rounds
+  el('mp-offer-form').style.display = (rnd.status === 'active') ? '' : 'none';
+
+  renderOffersList(rnd.offers || []);
+  mpStartTimers();
+}
+
+function renderOffersList(offers) {
+  const container = el('mp-offers-list');
+  if (!offers.length) {
+    container.innerHTML = '<p class="placeholder-msg">No offers yet. Be the first!</p>';
+    return;
+  }
+  container.innerHTML = offers.map(o => {
+    const statusCls = o.status;
+    const actionsHtml = o.status === 'open' ? `
+      <div class="mp-offer-actions">
+        <button class="btn-primary mp-accept-btn" data-oid="${o.id}" style="padding:4px 10px;font-size:0.75rem">Accept</button>
+        <button class="btn-danger mp-withdraw-btn" data-oid="${o.id}" style="padding:4px 10px;font-size:0.75rem">Withdraw</button>
+      </div>` : '';
+    return `
+      <div class="mp-offer-card">
+        <div class="mp-offer-side">
+          ${o.offer_card_image ? `<img src="${esc(o.offer_card_image)}" alt="" />` : ''}
+          <div class="mp-offer-side-info">
+            <strong>${esc(o.offer_card_name || o.offer_card_id)}</strong>
+            <span>${esc(o.offer_card_set || '')}</span>
+          </div>
+        </div>
+        <span class="mp-offer-swap">&#8644;</span>
+        <div class="mp-offer-side">
+          ${o.request_card_image ? `<img src="${esc(o.request_card_image)}" alt="" />` : ''}
+          <div class="mp-offer-side-info">
+            <strong>${esc(o.request_card_name || o.request_card_id)}</strong>
+            <span>${esc(o.request_card_set || '')}</span>
+          </div>
+        </div>
+        <span class="mp-offer-user">${esc(o.offerer_username || '?')}</span>
+        <span class="mp-offer-status ${statusCls}">${o.status}</span>
+        ${actionsHtml}
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.mp-accept-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      mpAcceptOffer(+btn.dataset.oid);
+    });
+  });
+  container.querySelectorAll('.mp-withdraw-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      mpWithdrawOffer(+btn.dataset.oid);
+    });
+  });
+}
+
+async function mpCreateRound() {
+  const name = el('mp-round-name').value.trim();
+  if (!name) { showFeedback('mp-create-feedback', 'Name is required', true); return; }
+  const description = el('mp-round-desc').value.trim();
+  const duration_min = parseInt(el('mp-round-duration').value, 10) || 60;
+
+  try {
+    await apiFetch('/api/marketplace/rounds', {
+      method: 'POST',
+      body: JSON.stringify({ name, description, duration_min }),
+    });
+    showFeedback('mp-create-feedback', 'Round created!');
+    el('mp-round-name').value = '';
+    el('mp-round-desc').value = '';
+    el('mp-round-duration').value = '60';
+    el('mp-create-form').style.display = 'none';
+    loadMarketplace();
+  } catch (e) {
+    showFeedback('mp-create-feedback', 'Error: ' + e.message, true);
+  }
+}
+
+async function mpSubmitOffer() {
+  if (!mpCurrentRound) return;
+  const offer_card_id = el('mp-offer-card').value.trim();
+  const request_card_id = el('mp-request-card').value.trim();
+  if (!offer_card_id || !request_card_id) {
+    showFeedback('mp-offer-feedback', 'Both card IDs are required', true);
+    return;
+  }
+  try {
+    await apiFetch(`/api/marketplace/rounds/${mpCurrentRound.id}/offers`, {
+      method: 'POST',
+      body: JSON.stringify({ offer_card_id, request_card_id }),
+    });
+    showFeedback('mp-offer-feedback', 'Offer submitted!');
+    el('mp-offer-card').value = '';
+    el('mp-request-card').value = '';
+    mpOpenRound(mpCurrentRound.id);
+  } catch (e) {
+    showFeedback('mp-offer-feedback', 'Error: ' + e.message, true);
+  }
+}
+
+async function mpAcceptOffer(offerId) {
+  if (!mpCurrentRound) return;
+  try {
+    await apiFetch(`/api/marketplace/rounds/${mpCurrentRound.id}/offers/${offerId}/accept`, {
+      method: 'POST',
+    });
+    mpOpenRound(mpCurrentRound.id);
+  } catch (e) {
+    alert('Could not accept: ' + e.message);
+  }
+}
+
+async function mpWithdrawOffer(offerId) {
+  if (!mpCurrentRound) return;
+  try {
+    await apiFetch(`/api/marketplace/rounds/${mpCurrentRound.id}/offers/${offerId}`, {
+      method: 'DELETE',
+    });
+    mpOpenRound(mpCurrentRound.id);
+  } catch (e) {
+    alert('Could not withdraw: ' + e.message);
+  }
+}
+
+async function mpSettleRound() {
+  if (!mpCurrentRound) return;
+  if (!confirm('Settle this round? All open offers will expire.')) return;
+  try {
+    await apiFetch(`/api/marketplace/rounds/${mpCurrentRound.id}/settle`, {
+      method: 'POST',
+    });
+    mpOpenRound(mpCurrentRound.id);
+  } catch (e) {
+    alert('Could not settle: ' + e.message);
+  }
+}
+
+function mpBackToList() {
+  el('mp-round-detail').style.display = 'none';
+  el('mp-rounds-list').style.display = '';
+  mpCurrentRound = null;
+  loadMarketplace();
+}
