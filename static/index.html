@@ -167,6 +167,9 @@
           <button id="pack-btn-start-session" class="btn-primary" style="margin-top:14px">
             Start Opening &#8594;
           </button>
+          <button id="pack-btn-history" class="btn-secondary" style="margin-top:8px">
+            &#128203; Past Openings
+          </button>
           <p id="pack-step1-error" class="pack-status-msg error"></p>
         </div>
 
@@ -246,6 +249,17 @@
           <button id="pack-reset-btn" class="btn-secondary">&#8592; Open Another Pack</button>
           <p id="pack-complete-msg" class="pack-status-msg"></p>
         </div>
+      </div>
+    </div>
+
+    <!-- ── Pack History ── -->
+    <div id="pack-step-history" class="pack-step" style="display:none">
+      <div class="pack-history-header">
+        <h2 class="pack-step-heading">&#128203; Pack Opening History</h2>
+        <button id="pack-btn-back-to-scan" class="btn-secondary">&#8592; New Opening</button>
+      </div>
+      <div id="pack-history-list">
+        <p class="placeholder-msg">Loading&hellip;</p>
       </div>
     </div>
 

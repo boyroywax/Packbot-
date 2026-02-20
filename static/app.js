@@ -536,7 +536,7 @@ function packEsc(s) {
 }
 
 function packShowStep(name) {
-  ['scan', 'opening', 'review'].forEach(s =>
+  ['scan', 'opening', 'review', 'history'].forEach(s =>
     el(`pack-step-${s}`).style.display = (s === name ? '' : 'none')
   );
 }
@@ -567,6 +567,10 @@ async function initPackTab() {
   el('pack-btn-stop-cam').addEventListener('click', packStopBarcodeCamera);
   el('pack-btn-scan-bar').addEventListener('click', packScanBarcode);
   el('pack-btn-start-session').addEventListener('click', startPackSession);
+
+  // Wire history buttons
+  el('pack-btn-history').addEventListener('click', loadPackHistory);
+  el('pack-btn-back-to-scan').addEventListener('click', () => packShowStep('scan'));
 
   // Wire step-2 buttons
   el('pack-btn-open-cam').addEventListener('click', packStartOpenCamera);
@@ -934,3 +938,93 @@ function resetPackOpening() {
   el('pack-complete-btn').textContent  = 'Save to Collection';
   packShowStep('scan');
 }
+
+// ============================================================
+// Pack History
+// ============================================================
+
+async function loadPackHistory() {
+  packShowStep('history');
+  const container = el('pack-history-list');
+  container.innerHTML = '<p class="placeholder-msg">Loading&hellip;</p>';
+  try {
+    const data = await apiFetch('/api/pack-sessions');
+    renderPackHistory(data.data || []);
+  } catch (e) {
+    const authErr = e.message.toLowerCase().includes('auth') || e.message.includes('401');
+    container.innerHTML = authErr
+      ? '<p class="placeholder-msg">Sign in to view your pack history.</p>'
+      : `<p class="placeholder-msg" style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+function renderPackHistory(sessions) {
+  const container = el('pack-history-list');
+  if (!sessions.length) {
+    container.innerHTML = '<p class="placeholder-msg">No pack openings yet. Start your first!</p>';
+    return;
+  }
+
+  container.innerHTML = sessions.map(s => {
+    const title = [s.pack_name, s.set_name].filter(Boolean).join(' \u2013 ') || `Session #${s.id}`;
+    const date  = formatDate(s.started_at);
+    const count = s.card_count ?? '?';
+    const status = s.status || 'unknown';
+    const barcodePart = s.barcode ? ` \u00b7 ${packEsc(s.barcode)}` : '';
+    return `
+      <div class="pack-history-item">
+        <div class="phi-summary" onclick="togglePackHistoryItem(${s.id}, this)">
+          <div class="phi-info">
+            <div class="phi-title">${packEsc(title)}</div>
+            <div class="phi-meta">${packEsc(date)}${barcodePart}</div>
+          </div>
+          <span class="phi-badge ${packEsc(status)}">${packEsc(status)}</span>
+          <span class="phi-card-count">${count} card${count !== 1 ? 's' : ''}</span>
+          <span class="phi-chevron">&#9660;</span>
+        </div>
+        <div id="phi-cards-${s.id}" class="phi-cards"></div>
+      </div>`;
+  }).join('');
+}
+
+async function togglePackHistoryItem(sessionId, summaryEl) {
+  const cardsEl = el(`phi-cards-${sessionId}`);
+  const chevron = summaryEl.querySelector('.phi-chevron');
+  const isOpen  = cardsEl.classList.contains('open');
+
+  if (isOpen) {
+    cardsEl.classList.remove('open');
+    chevron.classList.remove('open');
+    return;
+  }
+
+  cardsEl.classList.add('open');
+  chevron.classList.add('open');
+
+  // Lazy-load cards on first expand
+  if (cardsEl.dataset.loaded) return;
+  cardsEl.dataset.loaded = '1';
+  cardsEl.innerHTML = '<p style="font-size:0.82rem;color:var(--muted);padding:6px 0">Loading cards&hellip;</p>';
+
+  try {
+    const data  = await apiFetch(`/api/pack-sessions/${sessionId}`);
+    const cards = data.data?.cards || [];
+    if (!cards.length) {
+      cardsEl.innerHTML = '<p style="font-size:0.82rem;color:var(--muted);padding:6px 0">No cards recorded for this session.</p>';
+      return;
+    }
+    cardsEl.innerHTML = `<div class="phi-card-grid">${
+      cards.map(c => `
+        <div class="phi-card-tile">
+          <img src="${packEsc(c.image_small || '')}" alt="${packEsc(c.card_name)}"
+               onerror="this.style.display='none'" loading="lazy" />
+          <div class="pct-name">${packEsc(c.card_name || 'Unknown')}</div>
+          <div class="pct-meta">${packEsc(c.set_name || '')} · #${packEsc(c.number || '')}</div>
+        </div>`).join('')
+    }</div>`;
+  } catch (e) {
+    cardsEl.innerHTML = `<p style="font-size:0.82rem;color:var(--red);padding:6px 0">Error: ${e.message}</p>`;
+  }
+}
+
+window.togglePackHistoryItem = togglePackHistoryItem;
