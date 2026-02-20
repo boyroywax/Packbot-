@@ -106,14 +106,16 @@ _SQLITE_DDL = [
         created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS collection (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        card_id     TEXT NOT NULL REFERENCES cards(id),
-        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        condition   TEXT NOT NULL DEFAULT 'NM',
-        foil        INTEGER NOT NULL DEFAULT 0,
-        quantity    INTEGER NOT NULL DEFAULT 1,
-        notes       TEXT,
-        added_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_id      TEXT NOT NULL REFERENCES cards(id),
+        user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        condition    TEXT NOT NULL DEFAULT 'NM',
+        foil         INTEGER NOT NULL DEFAULT 0,
+        quantity     INTEGER NOT NULL DEFAULT 1,
+        notes        TEXT,
+        listing_type TEXT,
+        asking_price REAL,
+        added_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     # Partial unique indexes so anonymous and per-user entries coexist
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_no_user
@@ -141,6 +143,15 @@ _SQLITE_DDL = [
         last_seen   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
+    """CREATE TABLE IF NOT EXISTS wishlist (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        card_id     TEXT NOT NULL REFERENCES cards(id),
+        notes       TEXT,
+        added_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_wishlist_user_card ON wishlist(user_id, card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wishlist_user_id ON wishlist(user_id)",
 ]
 
 _PG_DDL = [
@@ -165,14 +176,16 @@ _PG_DDL = [
         created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS collection (
-        id          SERIAL PRIMARY KEY,
-        card_id     TEXT NOT NULL REFERENCES cards(id),
-        user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        condition   TEXT NOT NULL DEFAULT 'NM',
-        foil        INTEGER NOT NULL DEFAULT 0,
-        quantity    INTEGER NOT NULL DEFAULT 1,
-        notes       TEXT,
-        added_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        id           SERIAL PRIMARY KEY,
+        card_id      TEXT NOT NULL REFERENCES cards(id),
+        user_id      INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        condition    TEXT NOT NULL DEFAULT 'NM',
+        foil         INTEGER NOT NULL DEFAULT 0,
+        quantity     INTEGER NOT NULL DEFAULT 1,
+        notes        TEXT,
+        listing_type TEXT,
+        asking_price REAL,
+        added_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_col_no_user
         ON collection(card_id, condition, foil) WHERE user_id IS NULL""",
@@ -199,6 +212,15 @@ _PG_DDL = [
         last_seen   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
+    """CREATE TABLE IF NOT EXISTS wishlist (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        card_id     TEXT NOT NULL REFERENCES cards(id),
+        notes       TEXT,
+        added_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_wishlist_user_card ON wishlist(user_id, card_id)",
+    "CREATE INDEX IF NOT EXISTS idx_wishlist_user_id ON wishlist(user_id)",
 ]
 
 
@@ -211,11 +233,17 @@ def init_db():
     with get_db() as conn:
         for stmt in ddl:
             _exec(conn, stmt)
-        # Migration: add password_hash to users if missing (existing installs)
-        try:
-            _exec(conn, "ALTER TABLE users ADD COLUMN password_hash TEXT")
-        except Exception:
-            pass  # Column already exists – safe to ignore
+        # Additive migrations – safe to run on existing installs
+        for col, typ in [
+            ("password_hash", "TEXT"),
+            ("listing_type",  "TEXT"),
+            ("asking_price",  "REAL"),
+        ]:
+            table = "users" if col == "password_hash" else "collection"
+            try:
+                _exec(conn, f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            except Exception:
+                pass  # Column already exists
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +586,209 @@ def get_collection_stats(user_id: Optional[int] = None) -> dict:
             params,
         ).fetchone()
     return dict(row) if row else {"unique_cards": 0, "total_cards": 0, "unique_sets": 0}
+
+
+def update_collection_entry(entry_id: int, user_id: int, **kwargs) -> Optional[dict]:
+    """Update allowed fields of a collection entry owned by *user_id*.
+
+    Accepted keyword arguments: listing_type, asking_price, notes, condition, quantity.
+    Returns the updated row dict, or None if the entry doesn't exist / isn't owned by user_id.
+    """
+    _UPDATABLE = {"listing_type", "asking_price", "notes", "condition", "quantity"}
+    updates = {k: v for k, v in kwargs.items() if k in _UPDATABLE}
+    if not updates:
+        return None
+    # Column names are validated against _UPDATABLE so f-string interpolation is safe
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [entry_id, user_id]
+    with get_db() as conn:
+        cur = _exec(
+            conn,
+            f"UPDATE collection SET {set_clause} WHERE id = ? AND user_id = ?",
+            values,
+        )
+        if cur.rowcount == 0:
+            return None
+        row = _exec(
+            conn,
+            "SELECT * FROM collection WHERE id = ? AND user_id = ?",
+            (entry_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Public profiles
+# ---------------------------------------------------------------------------
+
+def get_public_profile(username: str) -> Optional[dict]:
+    """Return a public summary for *username*, or None if not found."""
+    with get_db() as conn:
+        urow = _exec(
+            conn,
+            "SELECT id, username, created_at FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if not urow:
+            return None
+        uid = dict(urow)["id"]
+        srow = _exec(
+            conn,
+            """
+            SELECT
+                COUNT(*)                                                     AS collection_count,
+                COALESCE(SUM(quantity), 0)                                   AS total_cards,
+                SUM(CASE WHEN listing_type IS NOT NULL THEN 1 ELSE 0 END)    AS listing_count
+            FROM collection
+            WHERE user_id = ?
+            """,
+            (uid,),
+        ).fetchone()
+        wrow = _exec(
+            conn,
+            "SELECT COUNT(*) AS wishlist_count FROM wishlist WHERE user_id = ?",
+            (uid,),
+        ).fetchone()
+    profile = dict(urow)
+    profile.update(
+        dict(srow) if srow else {"collection_count": 0, "total_cards": 0, "listing_count": 0}
+    )
+    profile.update(dict(wrow) if wrow else {"wishlist_count": 0})
+    return profile
+
+
+def get_public_collection(
+    username: str,
+    listing_type: Optional[str] = None,
+    only_listed: bool = False,
+    search: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """Return a paginated, public view of *username*'s collection.
+
+    Pass *listing_type* ('for_trade' | 'for_sale') to narrow to a specific
+    listing kind.  Pass *only_listed=True* to show all listed entries regardless
+    of type (for_trade OR for_sale).
+    """
+    offset = (page - 1) * page_size
+    filters = ["u.username = ?", "col.user_id IS NOT NULL"]
+    params: list = [username]
+
+    if listing_type:
+        filters.append("col.listing_type = ?")
+        params.append(listing_type)
+    elif only_listed:
+        filters.append("col.listing_type IS NOT NULL")
+    if search:
+        filters.append("c.name LIKE ?")
+        params.append(f"%{search}%")
+
+    where = "WHERE " + " AND ".join(filters)
+
+    with get_db() as conn:
+        total_row = _exec(
+            conn,
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM collection col
+            JOIN cards c ON c.id = col.card_id
+            JOIN users u ON u.id = col.user_id
+            {where}
+            """,
+            params,
+        ).fetchone()
+        total = dict(total_row)["cnt"] if total_row else 0
+
+        rows = _exec(
+            conn,
+            f"""
+            SELECT col.id, col.card_id, col.condition, col.foil, col.quantity,
+                   col.notes, col.added_at, col.listing_type, col.asking_price,
+                   c.name, c.set_id, c.set_name, c.number, c.rarity,
+                   c.image_small, c.image_large
+            FROM collection col
+            JOIN cards c ON c.id = col.card_id
+            JOIN users u ON u.id = col.user_id
+            {where}
+            ORDER BY col.added_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, offset],
+        ).fetchall()
+
+    return {"total": total, "page": page, "page_size": page_size, "items": [dict(r) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Wishlist
+# ---------------------------------------------------------------------------
+
+def add_to_wishlist(user_id: int, card_id: str, notes: str = "") -> dict:
+    """Add *card_id* to the wishlist for *user_id*.
+
+    If the card is already on the list the notes field is updated (upsert).
+    """
+    with get_db() as conn:
+        _exec(
+            conn,
+            """
+            INSERT INTO wishlist (user_id, card_id, notes)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, card_id) DO UPDATE SET notes = excluded.notes
+            """,
+            (user_id, card_id, notes or ""),
+        )
+        row = _exec(
+            conn,
+            "SELECT * FROM wishlist WHERE user_id = ? AND card_id = ?",
+            (user_id, card_id),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def remove_from_wishlist(wishlist_id: int, user_id: int) -> bool:
+    """Delete a wishlist entry owned by *user_id*."""
+    with get_db() as conn:
+        cur = _exec(
+            conn,
+            "DELETE FROM wishlist WHERE id = ? AND user_id = ?",
+            (wishlist_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def _wishlist_rows(conn, where: str, params) -> list:
+    rows = _exec(
+        conn,
+        f"""
+        SELECT w.id, w.card_id, w.notes, w.added_at,
+               c.name, c.set_id, c.set_name, c.number, c.rarity,
+               c.image_small, c.image_large
+        FROM wishlist w
+        JOIN cards c ON c.id = w.card_id
+        {where}
+        ORDER BY w.added_at DESC
+        """,
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_wishlist(user_id: int) -> list:
+    """Return all wishlist items for *user_id*."""
+    with get_db() as conn:
+        return _wishlist_rows(conn, "WHERE w.user_id = ?", (user_id,))
+
+
+def get_public_wishlist(username: str) -> list:
+    """Return wishlist items for a user identified by *username*."""
+    with get_db() as conn:
+        return _wishlist_rows(
+            conn,
+            "JOIN users u ON u.id = w.user_id WHERE u.username = ?",
+            (username,),
+        )
 
 
 # ---------------------------------------------------------------------------

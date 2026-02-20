@@ -447,6 +447,181 @@ def sessions_logout_all():
 
 
 # ---------------------------------------------------------------------------
+# Collection listing management  (PATCH /api/collection/<id>)
+# ---------------------------------------------------------------------------
+
+_VALID_LISTING_TYPES = {"for_trade", "for_sale", None}
+
+
+@app.route("/api/collection/<int:entry_id>", methods=["PATCH"])
+def collection_update(entry_id: int):
+    """Update a collection entry's listing status, asking price, notes, etc.
+
+    Auth required – only the owning user may update their entries.
+
+    Accepts JSON:
+      listing_type – "for_trade" | "for_sale" | null (removes listing)
+      asking_price – number, required when listing_type is "for_sale"
+      condition    – NM / LP / MP / HP / DMG
+      quantity     – positive integer
+      notes        – free-form string
+    """
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+
+    listing_type = data.get("listing_type", "__unset__")
+    if listing_type != "__unset__" and listing_type not in _VALID_LISTING_TYPES:
+        return jsonify({"error": "listing_type must be 'for_trade', 'for_sale', or null"}), 400
+
+    asking_price = data.get("asking_price")
+    if listing_type == "for_sale" and (asking_price is None or float(asking_price) <= 0):
+        return jsonify({"error": "asking_price must be a positive number for 'for_sale' listings"}), 400
+
+    # Clear asking_price when not for sale
+    if listing_type != "for_sale":
+        asking_price = None
+
+    update_kwargs = {}
+    if listing_type != "__unset__":
+        update_kwargs["listing_type"] = listing_type
+        update_kwargs["asking_price"] = asking_price
+    for field in ("condition", "quantity", "notes"):
+        if field in data:
+            update_kwargs[field] = data[field]
+
+    if not update_kwargs:
+        return jsonify({"error": "No updatable fields provided"}), 400
+
+    entry = db.update_collection_entry(entry_id, user_id, **update_kwargs)
+    if entry is None:
+        return jsonify({"error": "Entry not found or not owned by you"}), 404
+    return jsonify({"data": entry})
+
+
+# ---------------------------------------------------------------------------
+# Public profile routes  (no auth required)
+# ---------------------------------------------------------------------------
+
+@app.route("/u/<username>")
+def public_profile_page(username: str):
+    """Serve the public profile SPA page."""
+    return send_from_directory("static", "profile.html")
+
+
+@app.route("/api/users/<username>/profile")
+def users_public_profile(username: str):
+    """Return the public profile summary for *username*."""
+    profile = db.get_public_profile(username)
+    if not profile:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"data": profile})
+
+
+@app.route("/api/users/<username>/collection")
+def users_public_collection(username: str):
+    """Return a user's full public collection (paginated).
+
+    Query params: search, page, page_size
+    """
+    if not db.get_public_profile(username):
+        return jsonify({"error": "User not found"}), 404
+    page = int(request.args.get("page", 1))
+    page_size = min(int(request.args.get("page_size", 50)), 200)
+    result = db.get_public_collection(
+        username=username,
+        search=request.args.get("search", ""),
+        page=page,
+        page_size=page_size,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/users/<username>/listings")
+def users_public_listings(username: str):
+    """Return all for_trade and for_sale entries for *username*.
+
+    Query params: type (for_trade | for_sale), page, page_size
+    Omit *type* to return all listings regardless of kind.
+    """
+    if not db.get_public_profile(username):
+        return jsonify({"error": "User not found"}), 404
+    listing_type = request.args.get("type") or None
+    if listing_type and listing_type not in ("for_trade", "for_sale"):
+        return jsonify({"error": "type must be 'for_trade' or 'for_sale'"}), 400
+    page = int(request.args.get("page", 1))
+    page_size = min(int(request.args.get("page_size", 50)), 200)
+    result = db.get_public_collection(
+        username=username,
+        listing_type=listing_type,
+        only_listed=(listing_type is None),  # no type → show all listings
+        page=page,
+        page_size=page_size,
+    )
+    return jsonify(result)
+
+
+@app.route("/api/users/<username>/wishlist")
+def users_public_wishlist(username: str):
+    """Return the public wishlist for *username*."""
+    if not db.get_public_profile(username):
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"data": db.get_public_wishlist(username)})
+
+
+# ---------------------------------------------------------------------------
+# Wishlist  (auth required)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/wishlist", methods=["GET"])
+def wishlist_list():
+    """Return the authenticated user's wishlist."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+    return jsonify({"data": db.get_wishlist(user_id)})
+
+
+@app.route("/api/wishlist", methods=["POST"])
+def wishlist_add():
+    """Add a card to the authenticated user's wishlist.
+
+    Expects JSON:
+      card_id – required (fetched from TCG API if not already cached)
+      notes   – optional
+    """
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    card_id = data.get("card_id", "").strip()
+    if not card_id:
+        return jsonify({"error": "card_id is required"}), 400
+
+    card = tcg_api.get_card(card_id)
+    if not card:
+        return jsonify({"error": f"Card '{card_id}' not found"}), 404
+    db.upsert_card(card)
+
+    entry = db.add_to_wishlist(user_id=user_id, card_id=card_id, notes=data.get("notes", ""))
+    return jsonify({"data": entry}), 201
+
+
+@app.route("/api/wishlist/<int:wishlist_id>", methods=["DELETE"])
+def wishlist_remove(wishlist_id: int):
+    """Remove a wishlist entry owned by the authenticated user."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+    if not db.remove_from_wishlist(wishlist_id, user_id):
+        return jsonify({"error": "Wishlist entry not found"}), 404
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 

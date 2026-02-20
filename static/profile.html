@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Packbot – Trainer Profile</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    /* Profile-specific overrides */
+    .profile-hero {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .avatar {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem;
+      flex-shrink: 0;
+    }
+    .profile-info h2 { font-size: 1.5rem; color: var(--text); }
+    .profile-info .joined { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+    .stat-chips {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;
+    }
+    .chip {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 14px;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+    .chip strong { color: var(--accent); }
+
+    .profile-tabs {
+      background: var(--surface);
+      display: flex; gap: 4px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .ptab-btn {
+      background: none; border: none;
+      color: var(--muted);
+      padding: 12px 20px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+    }
+    .ptab-btn:hover { color: var(--text); }
+    .ptab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .ptab { display: none; padding: 20px; }
+    .ptab.active { display: block; }
+
+    /* Card grid */
+    .pub-card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
+      margin-top: 12px;
+    }
+    .pub-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: transform .15s, border-color .15s;
+      cursor: default;
+    }
+    .pub-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+    .pub-card img {
+      width: 100%; aspect-ratio: 3/4; object-fit: cover;
+      background: var(--surface);
+    }
+    .pub-card .card-body { padding: 10px; }
+    .pub-card .card-name { font-weight: 600; font-size: 0.9rem; }
+    .pub-card .card-meta { color: var(--muted); font-size: 0.75rem; margin-top: 3px; }
+    .pub-card .badge {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .badge-trade  { background: #1e40af33; color: #60a5fa; border: 1px solid #2563eb55; }
+    .badge-sale   { background: #16532233; color: #4ade80; border: 1px solid #22c55e55; }
+    .badge-price  { color: var(--accent); font-size: 0.8rem; font-weight: 700; margin-top: 4px; }
+    .badge-foil   { background: #7c3aed33; color: #a78bfa; border: 1px solid #7c3aed55; margin-left: 4px; }
+    .badge-cond   { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+    .wishlist-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }
+    .wish-card {
+      background: var(--surface2);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color .15s;
+    }
+    .wish-card:hover { border-color: var(--accent); }
+    .wish-card img { width: 100%; aspect-ratio: 3/4; object-fit: cover; background: var(--surface); }
+    .wish-card .card-body { padding: 8px; }
+    .wish-card .card-name { font-size: 0.85rem; font-weight: 600; }
+    .wish-card .card-meta { color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
+    .wish-notes { color: var(--muted); font-size: 0.75rem; font-style: italic; margin-top: 4px; }
+
+    .section-title {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 48px 20px;
+      font-size: 0.95rem;
+    }
+    .back-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .error-banner {
+      background: #7f1d1d55;
+      border: 1px solid var(--red);
+      color: #fca5a5;
+      padding: 20px 24px;
+      border-radius: var(--radius);
+      margin: 20px;
+    }
+    .loader { color: var(--muted); font-size: 0.9rem; }
+    .qty-tag { color: var(--muted); font-size: 0.78rem; }
+
+    .pagination-bar {
+      display: flex; gap: 8px; align-items: center;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .pagination-bar button {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .pagination-bar button:disabled { opacity: 0.35; cursor: default; }
+    .pagination-bar .page-info { color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>&#9670; Packbot</h1>
+    <a href="/" class="back-link" style="margin-left:auto">&#8592; Back to scanner</a>
+  </header>
+
+  <div id="app">
+    <div class="loader" style="padding:40px 24px">Loading profile…</div>
+  </div>
+
+  <script>
+  (() => {
+    // ---------------------------------------------------------------------------
+    // Routing
+    // ---------------------------------------------------------------------------
+    const pathParts = window.location.pathname.split('/');
+    const username = pathParts[pathParts.indexOf('u') + 1] || '';
+
+    if (!username) {
+      document.getElementById('app').innerHTML =
+        '<div class="error-banner">No username in URL. Expected <code>/u/&lt;username&gt;</code></div>';
+      return;
+    }
+
+    // ---------------------------------------------------------------------------
+    // State
+    // ---------------------------------------------------------------------------
+    let profile = null;
+    const pageState = { collection: 1, listings: 1, 'for_trade': 1, 'for_sale': 1 };
+    const PAGE_SIZE = 24;
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+    function esc(s) {
+      return String(s ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+    function condLabel(c) {
+      return { NM: 'Near Mint', LP: 'Lightly Played', MP: 'Moderately Played',
+               HP: 'Heavily Played', DMG: 'Damaged' }[c] || c;
+    }
+    function joinedDate(iso) {
+      return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+    }
+
+    async function apiFetch(path) {
+      const r = await fetch(path);
+      if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+      return r.json();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Card renderers
+    // ---------------------------------------------------------------------------
+    function renderCollectionCard(item) {
+      const badgeHtml = item.listing_type === 'for_trade'
+        ? '<span class="badge badge-trade">For Trade</span>'
+        : item.listing_type === 'for_sale'
+          ? '<span class="badge badge-sale">For Sale</span>'
+          : '';
+      const priceHtml = item.listing_type === 'for_sale' && item.asking_price
+        ? `<div class="badge-price">$${Number(item.asking_price).toFixed(2)}</div>`
+        : '';
+      const foilHtml = item.foil ? '<span class="badge badge-foil">&#10022; Foil</span>' : '';
+      return `
+        <div class="pub-card">
+          <img src="${esc(item.image_small || '')}" alt="${esc(item.name)}"
+               onerror="this.style.display='none'" loading="lazy" />
+          <div class="card-body">
+            <div class="card-name">${esc(item.name)}</div>
+            <div class="card-meta">${esc(item.set_name)} · ${esc(item.number)}</div>
+            <div class="card-meta">${esc(item.rarity || '')}</div>
+            <div style="margin-top:6px">
+              <span class="badge badge-cond">${esc(condLabel(item.condition))}</span>
+              ${foilHtml}
+            </div>
+            ${badgeHtml}
+            ${priceHtml}
+            <div class="qty-tag" style="margin-top:4px">Qty: ${esc(item.quantity)}</div>
+          </div>
+        </div>`;
+    }
+
+    function renderWishCard(item) {
+      return `
+        <div class="wish-card">
+          <img src="${esc(item.image_small || '')}" alt="${esc(item.name)}"
+               onerror="this.style.display='none'" loading="lazy" />
+          <div class="card-body">
+            <div class="card-name">${esc(item.name)}</div>
+            <div class="card-meta">${esc(item.set_name)} · ${esc(item.number)}</div>
+            ${item.notes ? `<div class="wish-notes">"${esc(item.notes)}"</div>` : ''}
+          </div>
+        </div>`;
+    }
+
+    function renderPagination(containerId, current, total, pageSize, onPage) {
+      const totalPages = Math.ceil(total / pageSize) || 1;
+      const bar = document.getElementById(containerId);
+      if (!bar) return;
+      bar.innerHTML = `
+        <button id="${containerId}-prev" ${current <= 1 ? 'disabled' : ''}>&#8592; Prev</button>
+        <span class="page-info">Page ${current} of ${totalPages} &nbsp;·&nbsp; ${total} items</span>
+        <button id="${containerId}-next" ${current >= totalPages ? 'disabled' : ''}>Next &#8594;</button>`;
+      bar.querySelector(`#${containerId}-prev`)?.addEventListener('click', () => onPage(current - 1));
+      bar.querySelector(`#${containerId}-next`)?.addEventListener('click', () => onPage(current + 1));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tab loaders
+    // ---------------------------------------------------------------------------
+    async function loadCollection(page) {
+      pageState.collection = page;
+      const grid = document.getElementById('tab-collection-grid');
+      const pag  = document.getElementById('tab-collection-pag');
+      if (!grid) return;
+      grid.innerHTML = '<div class="loader">Loading…</div>';
+      try {
+        const data = await apiFetch(
+          `/api/users/${encodeURIComponent(username)}/collection?page=${page}&page_size=${PAGE_SIZE}`
+        );
+        grid.innerHTML = data.items.length
+          ? data.items.map(renderCollectionCard).join('')
+          : '<div class="empty-state">&#128274; No cards in collection yet.</div>';
+        renderPagination('tab-collection-pag', page, data.total, PAGE_SIZE, loadCollection);
+      } catch (e) {
+        grid.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+      }
+    }
+
+    async function loadListings(type, tabPrefix, page) {
+      pageState[tabPrefix] = page;
+      const grid = document.getElementById(`tab-${tabPrefix}-grid`);
+      const pag  = document.getElementById(`tab-${tabPrefix}-pag`);
+      if (!grid) return;
+      grid.innerHTML = '<div class="loader">Loading…</div>';
+      const typeParam = type ? `&type=${type}` : '';
+      try {
+        const data = await apiFetch(
+          `/api/users/${encodeURIComponent(username)}/listings?page=${page}&page_size=${PAGE_SIZE}${typeParam}`
+        );
+        const emptyMsg = type === 'for_trade'
+          ? '&#128260; No cards listed for trade.'
+          : type === 'for_sale'
+            ? '&#128176; No cards listed for sale.'
+            : '&#128204; No listings yet.';
+        grid.innerHTML = data.items.length
+          ? data.items.map(renderCollectionCard).join('')
+          : `<div class="empty-state">${emptyMsg}</div>`;
+        renderPagination(`tab-${tabPrefix}-pag`, page, data.total, PAGE_SIZE,
+          (p) => loadListings(type, tabPrefix, p));
+      } catch (e) {
+        grid.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+      }
+    }
+
+    async function loadWishlist() {
+      const grid = document.getElementById('tab-wishlist-grid');
+      if (!grid) return;
+      grid.innerHTML = '<div class="loader">Loading…</div>';
+      try {
+        const data = await apiFetch(
+          `/api/users/${encodeURIComponent(username)}/wishlist`
+        );
+        grid.innerHTML = data.data.length
+          ? data.data.map(renderWishCard).join('')
+          : '<div class="empty-state">&#10024; Wishlist is empty.</div>';
+      } catch (e) {
+        grid.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tab switching
+    // ---------------------------------------------------------------------------
+    const tabLoaders = {
+      collection: () => loadCollection(pageState.collection),
+      trade:      () => loadListings('for_trade', 'for_trade', pageState['for_trade']),
+      sale:       () => loadListings('for_sale',  'for_sale',  pageState['for_sale']),
+      wishlist:   () => loadWishlist(),
+    };
+    let loadedTabs = new Set();
+
+    function switchTab(name) {
+      document.querySelectorAll('.ptab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.ptab').forEach(s => s.classList.remove('active'));
+      document.querySelector(`.ptab-btn[data-tab="${name}"]`)?.classList.add('active');
+      document.getElementById(`ptab-${name}`)?.classList.add('active');
+      if (!loadedTabs.has(name)) {
+        loadedTabs.add(name);
+        tabLoaders[name]?.();
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scaffold & boot
+    // ---------------------------------------------------------------------------
+    async function boot() {
+      try {
+        const res = await apiFetch(`/api/users/${encodeURIComponent(username)}/profile`);
+        profile = res.data;
+      } catch (e) {
+        document.getElementById('app').innerHTML =
+          `<div class="error-banner">&#10060; ${esc(e.message)}</div>`;
+        return;
+      }
+
+      document.title = `${profile.username} – Packbot`;
+
+      document.getElementById('app').innerHTML = `
+        <div class="profile-hero">
+          <div class="avatar">&#127965;</div>
+          <div class="profile-info">
+            <h2>${esc(profile.username)}</h2>
+            <div class="joined">Trainer since ${joinedDate(profile.created_at)}</div>
+            <div class="stat-chips">
+              <span class="chip"><strong>${profile.collection_count}</strong> unique cards</span>
+              <span class="chip"><strong>${profile.total_cards}</strong> total copies</span>
+              <span class="chip"><strong>${profile.listing_count}</strong> listings</span>
+              <span class="chip"><strong>${profile.wishlist_count}</strong> on wishlist</span>
+            </div>
+          </div>
+        </div>
+
+        <nav class="profile-tabs">
+          <button class="ptab-btn active" data-tab="collection">
+            &#128218; Collection
+          </button>
+          <button class="ptab-btn" data-tab="trade">
+            &#128260; For Trade
+          </button>
+          <button class="ptab-btn" data-tab="sale">
+            &#128176; For Sale
+          </button>
+          <button class="ptab-btn" data-tab="wishlist">
+            &#10024; Wishlist
+          </button>
+        </nav>
+
+        <section id="ptab-collection" class="ptab active">
+          <div class="section-title">Full Collection</div>
+          <div id="tab-collection-grid" class="pub-card-grid loader">Loading…</div>
+          <div id="tab-collection-pag" class="pagination-bar"></div>
+        </section>
+
+        <section id="ptab-trade" class="ptab">
+          <div class="section-title">Available for Trade</div>
+          <div id="tab-for_trade-grid" class="pub-card-grid"></div>
+          <div id="tab-for_trade-pag" class="pagination-bar"></div>
+        </section>
+
+        <section id="ptab-sale" class="ptab">
+          <div class="section-title">For Sale</div>
+          <div id="tab-for_sale-grid" class="pub-card-grid"></div>
+          <div id="tab-for_sale-pag" class="pagination-bar"></div>
+        </section>
+
+        <section id="ptab-wishlist" class="ptab">
+          <div class="section-title">Wishlist – cards this trainer is looking for</div>
+          <div id="tab-wishlist-grid" class="wishlist-grid"></div>
+        </section>`;
+
+      // Wire tab buttons
+      document.querySelectorAll('.ptab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      });
+
+      // Load first tab
+      loadedTabs.add('collection');
+      loadCollection(1);
+    }
+
+    boot();
+  })();
+  </script>
+</body>
+</html>
