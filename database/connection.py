@@ -10,8 +10,17 @@ import sqlite3
 from contextlib import contextmanager
 
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "")
-DATABASE_PATH: str = os.getenv("DATABASE_PATH", "packbot.db")
+def _get_database_url() -> str:
+    return os.getenv("DATABASE_URL", "")
+
+
+def _get_database_path() -> str:
+    return os.getenv("DATABASE_PATH", "packbot.db")
+
+
+# Keep module-level names for backward compatibility
+DATABASE_URL: str = _get_database_url()
+DATABASE_PATH: str = _get_database_path()
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +28,8 @@ DATABASE_PATH: str = os.getenv("DATABASE_PATH", "packbot.db")
 # ---------------------------------------------------------------------------
 
 def _is_pg() -> bool:
-    return bool(DATABASE_URL and DATABASE_URL.startswith(("postgres://", "postgresql://")))
+    url = _get_database_url()
+    return bool(url and url.startswith(("postgres://", "postgresql://")))
 
 
 def _q(query: str) -> str:
@@ -50,7 +60,7 @@ def get_db():
     if _is_pg():
         import psycopg2
         import psycopg2.extras
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn = psycopg2.connect(_get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
         try:
             yield conn
             conn.commit()
@@ -60,7 +70,7 @@ def get_db():
         finally:
             conn.close()
     else:
-        conn = sqlite3.connect(DATABASE_PATH)
+        conn = sqlite3.connect(_get_database_path())
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
