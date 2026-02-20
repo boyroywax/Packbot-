@@ -10,6 +10,11 @@ A web-based Pokemon TCG card scanner and collection manager.
 - **Collection manager** – Track cards by condition, quantity, and foil status
 - **Scan history** – Review all previously scanned cards
 
+## App Walkthrough
+
+For a **complete walkthrough** of every feature with screenshots, see the
+[Walkthrough Guide](docs/WALKTHROUGH.md).
+
 ## Quick Start
 
 ```bash
