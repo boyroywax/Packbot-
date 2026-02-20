@@ -10,3 +10,6 @@ psycopg2-binary==2.9.9
 # Optional – enables barcode scanning on pack labels (requires libzbar0 system lib)
 # Install: apt-get install libzbar0 && pip install pyzbar
 pyzbar==0.1.9
+# Optional – enables OCR card-text extraction (requires tesseract-ocr system package)
+# Install: apt-get install tesseract-ocr && pip install pytesseract
+pytesseract==0.3.10

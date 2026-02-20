@@ -18,6 +18,8 @@
     <button class="nav-btn" data-tab="collection">Collection</button>
     <button class="nav-btn" data-tab="history">History</button>
     <button class="nav-btn" data-tab="pack">&#127873; Pack Opening</button>
+    <button class="nav-btn" data-tab="trades">&#8644; Trades</button>
+    <button class="nav-btn" data-tab="messages">&#9993; Messages <span id="msg-unread-badge" class="msg-badge" style="display:none">0</span></button>
   </nav>
 
   <!-- ==================== SCANNER TAB ==================== -->
@@ -260,6 +262,78 @@
       </div>
       <div id="pack-history-list">
         <p class="placeholder-msg">Loading&hellip;</p>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ==================== TRADE MATCHES TAB ==================== -->
+  <section id="tab-trades" class="tab">
+    <div class="trades-header">
+      <h2 class="trades-title">&#8644; Trade Matches</h2>
+      <button id="trades-refresh-btn" class="btn-secondary">&#8635; Refresh</button>
+    </div>
+    <div id="trades-auth-msg" class="placeholder-msg" style="display:none">
+      Sign in to see trade opportunities.
+    </div>
+    <div id="trades-content">
+      <div class="trades-section">
+        <h3 class="trades-section-title">&#128200; People who want your cards</h3>
+        <div id="trades-you-have" class="trades-list">
+          <p class="placeholder-msg">Loading&hellip;</p>
+        </div>
+      </div>
+      <div class="trades-section">
+        <h3 class="trades-section-title">&#128203; Cards you want from others</h3>
+        <div id="trades-they-have" class="trades-list">
+          <p class="placeholder-msg">Loading&hellip;</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== MESSAGES TAB ==================== -->
+  <section id="tab-messages" class="tab">
+
+    <!-- Inbox pane -->
+    <div id="msg-inbox-pane">
+      <div class="msg-pane-header">
+        <h2 class="msg-pane-title">&#9993; Inbox</h2>
+        <button id="msg-btn-compose" class="btn-primary">+ Compose</button>
+      </div>
+      <div id="msg-auth-warning" class="placeholder-msg" style="display:none">
+        Sign in to view your messages.
+      </div>
+      <div id="msg-inbox-list"></div>
+    </div>
+
+    <!-- Detail pane -->
+    <div id="msg-detail-pane" style="display:none">
+      <div class="msg-pane-header">
+        <button id="msg-btn-back" class="btn-secondary">&#8592; Inbox</button>
+        <button id="msg-btn-delete" class="btn-danger">Delete</button>
+      </div>
+      <div id="msg-detail-body"></div>
+      <div id="msg-reply-section" class="msg-reply-section" style="display:none">
+        <h4>Reply</h4>
+        <textarea id="msg-reply-body" class="msg-textarea" placeholder="Write your reply&hellip;"></textarea>
+        <button id="msg-reply-send" class="btn-primary">Send Reply</button>
+        <p id="msg-reply-feedback" class="feedback"></p>
+      </div>
+    </div>
+
+    <!-- Compose pane -->
+    <div id="msg-compose-pane" style="display:none">
+      <div class="msg-pane-header">
+        <button id="msg-btn-cancel-compose" class="btn-secondary">&#8592; Cancel</button>
+        <h3 class="msg-pane-title">New Message</h3>
+      </div>
+      <div class="msg-compose-form">
+        <label>To <input id="msg-to" type="text" placeholder="Username" /></label>
+        <label>Subject <input id="msg-subject" type="text" placeholder="Optional" /></label>
+        <label>Message <textarea id="msg-body" class="msg-textarea" placeholder="Your message&hellip;"></textarea></label>
+        <button id="msg-send-btn" class="btn-primary">Send</button>
+        <p id="msg-send-feedback" class="feedback"></p>
       </div>
     </div>
 

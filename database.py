@@ -177,6 +177,17 @@ _SQLITE_DDL = [
         detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_psc_session_id ON pack_session_cards(session_id)",
+    """CREATE TABLE IF NOT EXISTS messages (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        subject      TEXT NOT NULL DEFAULT '',
+        body         TEXT NOT NULL,
+        read         INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_sender    ON messages(sender_id)",
 ]
 
 _PG_DDL = [
@@ -271,6 +282,17 @@ _PG_DDL = [
         detected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
     "CREATE INDEX IF NOT EXISTS idx_psc_session_id ON pack_session_cards(session_id)",
+    """CREATE TABLE IF NOT EXISTS messages (
+        id           SERIAL PRIMARY KEY,
+        sender_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        subject      TEXT NOT NULL DEFAULT '',
+        body         TEXT NOT NULL,
+        read         INTEGER NOT NULL DEFAULT 0,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_sender    ON messages(sender_id)",
 ]
 
 
@@ -1013,3 +1035,161 @@ def get_scan_history(limit: int = 50, user_id: Optional[int] = None) -> list:
             params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Trade matching
+# ---------------------------------------------------------------------------
+
+def get_trade_matches(user_id: int) -> dict:
+    """Return trade opportunities for *user_id*.
+
+    Returns a dict with two keys:
+
+    ``you_have_they_want``
+        Your ``for_trade`` listings where another user's wishlist contains the
+        same card.
+
+    ``they_have_you_want``
+        Other users' ``for_trade`` listings where you have the card on your
+        wishlist.
+    """
+    _CARD_COLS = """
+        c.id AS card_id, c.name AS card_name, c.set_id, c.set_name,
+        c.number, c.rarity, c.image_small
+    """
+    with get_db() as conn:
+        yours = _exec(
+            conn,
+            f"""
+            SELECT {_CARD_COLS},
+                   col.id AS col_id, col.condition, col.asking_price, col.listing_type,
+                   u.id   AS match_user_id, u.username AS match_username,
+                   w.id   AS wishlist_id,  w.notes    AS wishlist_notes
+            FROM   collection col
+            JOIN   cards c        ON c.id      = col.card_id
+            JOIN   wishlist w     ON w.card_id = col.card_id
+            JOIN   users u        ON u.id      = w.user_id
+            WHERE  col.user_id    = ?
+              AND  col.listing_type = 'for_trade'
+              AND  w.user_id       != ?
+            ORDER BY c.name
+            """,
+            (user_id, user_id),
+        ).fetchall()
+
+        theirs = _exec(
+            conn,
+            f"""
+            SELECT {_CARD_COLS},
+                   col.id AS col_id, col.condition, col.asking_price, col.listing_type,
+                   u.id   AS match_user_id, u.username AS match_username,
+                   w.id   AS wishlist_id,  w.notes    AS wishlist_notes
+            FROM   wishlist w
+            JOIN   cards c        ON c.id      = w.card_id
+            JOIN   collection col ON col.card_id = w.card_id
+            JOIN   users u        ON u.id       = col.user_id
+            WHERE  w.user_id      = ?
+              AND  col.listing_type = 'for_trade'
+              AND  col.user_id     != ?
+            ORDER BY c.name
+            """,
+            (user_id, user_id),
+        ).fetchall()
+
+    return {
+        "you_have_they_want": [dict(r) for r in yours],
+        "they_have_you_want": [dict(r) for r in theirs],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Messages
+# ---------------------------------------------------------------------------
+
+def send_message(
+    sender_id: int,
+    recipient_id: int,
+    body: str,
+    subject: str = "",
+) -> dict:
+    """Insert a message and return the new row."""
+    with get_db() as conn:
+        _exec(
+            conn,
+            "INSERT INTO messages (sender_id, recipient_id, subject, body) VALUES (?,?,?,?)",
+            (sender_id, recipient_id, subject or "", body),
+        )
+        if _is_pg():
+            row = _exec(conn, "SELECT * FROM messages WHERE id = lastval()").fetchone()
+        else:
+            row = _exec(conn, "SELECT * FROM messages WHERE id = last_insert_rowid()").fetchone()
+    return dict(row) if row else {}
+
+
+def get_message(message_id: int) -> Optional[dict]:
+    """Return a single message row with sender/recipient usernames, or None."""
+    with get_db() as conn:
+        row = _exec(
+            conn,
+            """
+            SELECT m.*,
+                   s.username AS sender_username,
+                   r.username AS recipient_username
+            FROM   messages m
+            JOIN   users s ON s.id = m.sender_id
+            JOIN   users r ON r.id = m.recipient_id
+            WHERE  m.id = ?
+            """,
+            (message_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_inbox(user_id: int, limit: int = 50) -> list:
+    """Return messages where *user_id* is the recipient, newest first."""
+    with get_db() as conn:
+        rows = _exec(
+            conn,
+            """
+            SELECT m.*,
+                   s.username AS sender_username,
+                   r.username AS recipient_username
+            FROM   messages m
+            JOIN   users s ON s.id = m.sender_id
+            JOIN   users r ON r.id = m.recipient_id
+            WHERE  m.recipient_id = ?
+            ORDER BY m.created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_unread_count(user_id: int) -> int:
+    """Return the number of unread messages for *user_id*."""
+    with get_db() as conn:
+        row = _exec(
+            conn,
+            "SELECT COUNT(*) AS cnt FROM messages WHERE recipient_id = ? AND read = 0",
+            (user_id,),
+        ).fetchone()
+    return dict(row)["cnt"] if row else 0
+
+
+def mark_message_read(message_id: int) -> None:
+    """Set read=1 on a message."""
+    with get_db() as conn:
+        _exec(conn, "UPDATE messages SET read = 1 WHERE id = ?", (message_id,))
+
+
+def delete_message(message_id: int, user_id: int) -> bool:
+    """Delete a message if *user_id* is the sender or recipient."""
+    with get_db() as conn:
+        cur = _exec(
+            conn,
+            "DELETE FROM messages WHERE id = ? AND (sender_id = ? OR recipient_id = ?)",
+            (message_id, user_id, user_id),
+        )
+        return cur.rowcount > 0

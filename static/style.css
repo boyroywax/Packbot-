@@ -639,3 +639,112 @@ td img { width: 40px; border-radius: 4px; }
 .phi-card-tile img { width: 100%; aspect-ratio: 3/4; object-fit: cover; background: var(--surface); }
 .phi-card-tile .pct-name { font-size: 0.72rem; padding: 5px 4px 2px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .phi-card-tile .pct-meta { font-size: 0.64rem; color: var(--muted); padding-bottom: 6px; }
+
+/* ========== Messages nav badge ========== */
+.msg-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--red); color: #fff;
+  font-size: 0.65rem; font-weight: 700;
+  border-radius: 999px;
+  min-width: 17px; height: 17px;
+  padding: 0 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+/* ========== Trade Matches ========== */
+.trades-header {
+  display: flex; align-items: center; gap: 14px; margin-bottom: 20px;
+}
+.trades-title { font-size: 1.2rem; color: var(--accent); }
+.trades-section { margin-bottom: 28px; }
+.trades-section-title {
+  font-size: 0.9rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.trades-list { display: flex; flex-direction: column; gap: 8px; }
+
+.trade-match-card {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px;
+  transition: border-color 0.15s;
+}
+.trade-match-card:hover { border-color: var(--accent); }
+.trade-match-card img {
+  width: 44px; height: 60px; object-fit: cover;
+  border-radius: 4px; background: var(--surface2); flex-shrink: 0;
+}
+.tmc-info { flex: 1; min-width: 0; }
+.tmc-name { font-weight: 600; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tmc-meta { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+.tmc-price { font-size: 0.75rem; color: var(--accent); margin-top: 2px; }
+.tmc-user { font-size: 0.8rem; color: var(--muted); flex-shrink: 0; text-align: right; }
+.tmc-user a { color: var(--accent2); text-decoration: none; }
+.tmc-user a:hover { text-decoration: underline; }
+.tmc-actions { display: flex; flex-direction: column; gap: 5px; align-items: flex-end; flex-shrink: 0; }
+
+/* ========== Messages ========== */
+.msg-pane-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+}
+.msg-pane-title { font-size: 1.1rem; color: var(--accent); flex: 1; }
+
+.msg-inbox-list { display: flex; flex-direction: column; gap: 6px; }
+
+.msg-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.msg-item:hover { border-color: var(--accent2); background: var(--surface2); }
+.msg-item.unread { border-left: 3px solid var(--accent2); }
+
+.msg-unread-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent2); flex-shrink: 0;
+}
+.msg-item:not(.unread) .msg-unread-dot { background: transparent; }
+
+.msg-item-info { flex: 1; min-width: 0; }
+.msg-item-from { font-weight: 600; font-size: 0.88rem; }
+.msg-item:not(.unread) .msg-item-from { font-weight: 400; color: var(--muted); }
+.msg-item-subject { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.msg-item-time { font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
+
+.msg-detail-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
+}
+.msg-detail-subject { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; }
+.msg-detail-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
+.msg-detail-body { font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+.msg-reply-section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.msg-reply-section h4 { font-size: 0.88rem; color: var(--muted); margin-bottom: 8px; }
+
+.msg-textarea {
+  width: 100%; min-height: 110px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 7px; color: var(--text);
+  padding: 9px 12px; font-size: 0.9rem; resize: vertical;
+  font-family: inherit; outline: none; transition: border-color 0.15s;
+  display: block; margin-bottom: 10px;
+}
+.msg-textarea:focus { border-color: var(--accent); }
+
+.msg-compose-form {
+  display: flex; flex-direction: column; gap: 12px;
+  max-width: 640px;
+}
+.msg-compose-form label {
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 0.85rem; color: var(--muted);
+}

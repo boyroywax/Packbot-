@@ -51,6 +51,74 @@ def phash_distance(h1: str, h2: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# OCR helpers  (optional – requires pytesseract + tesseract system package)
+# ---------------------------------------------------------------------------
+
+def _ocr_preprocess(image: Image.Image) -> Image.Image:
+    """Convert to grayscale and sharpen for better OCR accuracy."""
+    import cv2
+    import numpy as _np
+    arr = _np.array(image.convert("L"))
+    arr = cv2.GaussianBlur(arr, (3, 3), 0)
+    _, arr = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(arr)
+
+
+def ocr_extract_card_text(image: Image.Image) -> dict:
+    """Use Tesseract OCR to pull the card name and collector number from an image.
+
+    Regions targeted:
+    * Top 18 % of the card – Pokémon name
+    * Bottom 12 % of the card – collector number (e.g. "4/102" or "SVI 001")
+
+    Returns a dict with zero or more of: ``name``, ``number``, ``set_code``.
+    Silently returns ``{}`` if pytesseract is not installed or Tesseract is
+    not available on the system.
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        return {}
+
+    result: dict = {}
+    w, h = image.size
+
+    # --- Name region (top 18 %, ignore far edges) ---
+    name_crop = image.crop((int(w * 0.08), int(h * 0.04), int(w * 0.82), int(h * 0.20)))
+    try:
+        name_crop = _ocr_preprocess(name_crop).resize(
+            (name_crop.width * 3, name_crop.height * 3), Image.LANCZOS
+        )
+        raw = pytesseract.image_to_string(name_crop, config="--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz- ").strip()
+        raw = re.sub(r"\s+", " ", raw).strip()
+        if len(raw) >= 3:
+            result["name"] = raw
+    except Exception:
+        pass
+
+    # --- Number region (bottom 12 %, left-centre) ---
+    num_crop = image.crop((int(w * 0.02), int(h * 0.87), int(w * 0.50), int(h * 0.97)))
+    try:
+        num_crop = _ocr_preprocess(num_crop).resize(
+            (num_crop.width * 3, num_crop.height * 3), Image.LANCZOS
+        )
+        raw = pytesseract.image_to_string(num_crop, config="--psm 7").strip()
+        # Pattern "4/102" or "001/200"
+        m = re.search(r"(\d{1,4})\s*/\s*(\d{1,4})", raw)
+        if m:
+            result["number"] = m.group(1).lstrip("0") or "0"
+        # Pattern "SVI 001" or "TEF 123"
+        m2 = re.search(r"\b([A-Z]{2,5})\s+(\d{1,4})\b", raw)
+        if m2 and not result.get("number"):
+            result["set_code"] = m2.group(1)
+            result["number"] = m2.group(2).lstrip("0") or "0"
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Text-based lookup helpers
 # ---------------------------------------------------------------------------
 
@@ -109,6 +177,19 @@ def scan_from_image(
         candidates – list of alternative matches
     """
     result = {"card": None, "method": "none", "confidence": 0.0, "candidates": []}
+
+    # -- OCR enhancement: derive hints from image when none provided --
+    if data_url and not pokemon_name.strip() and not (set_code.strip() and card_number.strip()):
+        try:
+            ocr_hints = ocr_extract_card_text(crop_card_region(decode_base64_image(data_url)))
+            if ocr_hints.get("set_code") and not set_code:
+                set_code = ocr_hints["set_code"]
+            if ocr_hints.get("number") and not card_number:
+                card_number = ocr_hints["number"]
+            if ocr_hints.get("name") and not pokemon_name:
+                pokemon_name = ocr_hints["name"]
+        except Exception:
+            pass  # OCR failure is non-fatal
 
     # -- Exact set/number lookup --
     if set_code and card_number:

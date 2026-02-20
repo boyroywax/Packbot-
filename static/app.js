@@ -49,6 +49,8 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     if (btn.dataset.tab === 'collection') loadCollection();
     if (btn.dataset.tab === 'history') loadHistory();
     if (btn.dataset.tab === 'pack') initPackTab();
+    if (btn.dataset.tab === 'trades') loadTradeMatches();
+    if (btn.dataset.tab === 'messages') initMessagesTab();
   });
 });
 
@@ -1028,3 +1030,262 @@ async function togglePackHistoryItem(sessionId, summaryEl) {
 }
 
 window.togglePackHistoryItem = togglePackHistoryItem;
+
+// ============================================================
+// Trade Matches
+// ============================================================
+
+el('trades-refresh-btn').addEventListener('click', loadTradeMatches);
+
+async function loadTradeMatches() {
+  el('trades-auth-msg').style.display  = 'none';
+  el('trades-content').style.display   = '';
+  el('trades-you-have').innerHTML  = '<p class="placeholder-msg">Loading\u2026</p>';
+  el('trades-they-have').innerHTML = '<p class="placeholder-msg">Loading\u2026</p>';
+  try {
+    const data = await apiFetch('/api/trade-matches');
+    renderTradeMatches(data.data);
+  } catch (e) {
+    const authErr = e.message.toLowerCase().includes('auth') || e.message.includes('401');
+    if (authErr) {
+      el('trades-auth-msg').style.display = '';
+      el('trades-content').style.display  = 'none';
+    } else {
+      el('trades-you-have').innerHTML  = `<p class="placeholder-msg" style="color:var(--red)">Error: ${e.message}</p>`;
+      el('trades-they-have').innerHTML = '';
+    }
+  }
+}
+
+function renderTradeMatches(data) {
+  renderTradeList('trades-you-have',  data.you_have_they_want || [], true);
+  renderTradeList('trades-they-have', data.they_have_you_want || [], false);
+}
+
+function renderTradeList(containerId, items, isYouHave) {
+  const container = el(containerId);
+  if (!items.length) {
+    container.innerHTML = '<p class="placeholder-msg" style="height:60px">No matches yet.</p>';
+    return;
+  }
+  container.innerHTML = items.map(m => {
+    const name     = packEsc(m.card_name || 'Unknown');
+    const set      = packEsc(m.set_name  || m.set_id || '');
+    const num      = m.number ? ` \u00b7 #${packEsc(m.number)}` : '';
+    const username = packEsc(m.match_username || '');
+    const img      = packEsc(m.image_small || '');
+    const label    = isYouHave ? 'Wants your card' : 'Has this for trade';
+    const cond     = (!isYouHave && m.condition)    ? `<span>${packEsc(m.condition)}</span>` : '';
+    const price    = (!isYouHave && m.asking_price) ? `<span class="tmc-price">$${Number(m.asking_price).toFixed(2)}</span>` : '';
+    const safeUser = username.replace(/'/g, "\\'");
+    const safeName = name.replace(/'/g, "\\'");
+    return `
+      <div class="trade-match-card">
+        <img src="${img}" alt="${name}" onerror="this.style.display='none'" loading="lazy" />
+        <div class="tmc-info">
+          <div class="tmc-name">${name}</div>
+          <div class="tmc-meta">${set}${num}</div>
+          ${cond}${price}
+        </div>
+        <div class="tmc-actions">
+          <span class="tmc-user">${packEsc(label)}<br/>
+            <a href="/u/${username}" target="_blank">@${username}</a>
+          </span>
+          <button class="btn-secondary" style="font-size:0.78rem;padding:4px 10px"
+            onclick="startTradeMessage('${safeUser}','${safeName}')">
+            \u2709 Message
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+window.startTradeMessage = function(username, cardName) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  const msgBtn = document.querySelector('[data-tab="messages"]');
+  if (msgBtn) msgBtn.classList.add('active');
+  el('tab-messages').classList.add('active');
+  initMessagesTab();
+  showCompose(username, `Trade request: ${cardName}`);
+};
+
+// ============================================================
+// Messages
+// ============================================================
+
+let msgTabInited  = false;
+let currentMessage = null;
+
+function showMsgPane(name) {
+  ['inbox', 'detail', 'compose'].forEach(p =>
+    el(`msg-${p}-pane`).style.display = (p === name ? '' : 'none')
+  );
+}
+
+function initMessagesTab() {
+  if (msgTabInited) return;
+  msgTabInited = true;
+
+  el('msg-btn-compose').addEventListener('click', () => showCompose());
+  el('msg-btn-cancel-compose').addEventListener('click', () => showMsgPane('inbox'));
+  el('msg-btn-back').addEventListener('click', () => {
+    currentMessage = null;
+    el('msg-reply-section').style.display = 'none';
+    loadInbox();
+    showMsgPane('inbox');
+  });
+  el('msg-btn-delete').addEventListener('click', deleteCurrentMessage);
+  el('msg-send-btn').addEventListener('click', sendMessage);
+  el('msg-reply-send').addEventListener('click', sendReply);
+
+  loadInbox();
+}
+
+async function loadInbox() {
+  el('msg-auth-warning').style.display = 'none';
+  el('msg-inbox-list').innerHTML = '';
+  try {
+    const data = await apiFetch('/api/messages');
+    renderInbox(data.data || []);
+    refreshUnreadBadge();
+  } catch (e) {
+    const authErr = e.message.toLowerCase().includes('auth') || e.message.includes('401');
+    if (authErr) {
+      el('msg-auth-warning').style.display = '';
+    } else {
+      el('msg-inbox-list').innerHTML = `<p class="placeholder-msg" style="color:var(--red)">Error: ${e.message}</p>`;
+    }
+  }
+}
+
+function renderInbox(messages) {
+  if (!messages.length) {
+    el('msg-inbox-list').innerHTML = '<p class="placeholder-msg">Your inbox is empty.</p>';
+    return;
+  }
+  el('msg-inbox-list').innerHTML = messages.map(m => `
+    <div class="msg-item ${m.read ? '' : 'unread'}" onclick="openMessage(${m.id})">
+      <div class="msg-unread-dot"></div>
+      <div class="msg-item-info">
+        <div class="msg-item-from">${packEsc(m.sender_username || '')}</div>
+        <div class="msg-item-subject">${packEsc(m.subject || '(no subject)')}</div>
+      </div>
+      <div class="msg-item-time">${formatDate(m.created_at)}</div>
+    </div>`).join('');
+}
+
+window.openMessage = async function(messageId) {
+  try {
+    const data = await apiFetch(`/api/messages/${messageId}`);
+    currentMessage = data.data;
+    const m = currentMessage;
+    el('msg-detail-body').innerHTML = `
+      <div class="msg-detail-card">
+        <div class="msg-detail-subject">${packEsc(m.subject || '(no subject)')}</div>
+        <div class="msg-detail-meta">
+          <span>From: <strong>${packEsc(m.sender_username || '')}</strong></span>
+          <span>To: <strong>${packEsc(m.recipient_username || '')}</strong></span>
+          <span>${formatDate(m.created_at)}</span>
+        </div>
+        <div class="msg-detail-body">${packEsc(m.body || '')}</div>
+      </div>`;
+    el('msg-reply-section').style.display = '';
+    el('msg-reply-body').value = '';
+    el('msg-reply-feedback').textContent = '';
+    showMsgPane('detail');
+    refreshUnreadBadge();
+  } catch (e) {
+    alert(`Error loading message: ${e.message}`);
+  }
+};
+
+async function deleteCurrentMessage() {
+  if (!currentMessage || !confirm('Delete this message?')) return;
+  try {
+    await apiFetch(`/api/messages/${currentMessage.id}`, { method: 'DELETE' });
+    currentMessage = null;
+    el('msg-reply-section').style.display = 'none';
+    loadInbox();
+    showMsgPane('inbox');
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+  }
+}
+
+function showCompose(toUsername = '', subject = '') {
+  el('msg-to').value      = toUsername;
+  el('msg-subject').value = subject;
+  el('msg-body').value    = '';
+  el('msg-send-feedback').textContent = '';
+  showMsgPane('compose');
+}
+
+async function sendMessage() {
+  const to      = el('msg-to').value.trim();
+  const subject = el('msg-subject').value.trim();
+  const body    = el('msg-body').value.trim();
+  if (!to)   { showFeedback('msg-send-feedback', 'Recipient is required', true); return; }
+  if (!body) { showFeedback('msg-send-feedback', 'Message body is required', true); return; }
+
+  el('msg-send-btn').disabled    = true;
+  el('msg-send-btn').textContent = 'Sending\u2026';
+  try {
+    await apiFetch('/api/messages', {
+      method: 'POST', body: JSON.stringify({ to, subject, body }),
+    });
+    showFeedback('msg-send-feedback', 'Message sent!');
+    setTimeout(() => { loadInbox(); showMsgPane('inbox'); }, 1200);
+  } catch (e) {
+    showFeedback('msg-send-feedback', `Error: ${e.message}`, true);
+  } finally {
+    el('msg-send-btn').disabled    = false;
+    el('msg-send-btn').textContent = 'Send';
+  }
+}
+
+async function sendReply() {
+  if (!currentMessage) return;
+  const body = el('msg-reply-body').value.trim();
+  if (!body) { showFeedback('msg-reply-feedback', 'Reply cannot be empty', true); return; }
+
+  el('msg-reply-send').disabled    = true;
+  el('msg-reply-send').textContent = 'Sending\u2026';
+  try {
+    await apiFetch('/api/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        to:      currentMessage.sender_username,
+        subject: currentMessage.subject ? `Re: ${currentMessage.subject}` : '',
+        body,
+      }),
+    });
+    showFeedback('msg-reply-feedback', 'Reply sent!');
+    el('msg-reply-body').value = '';
+  } catch (e) {
+    showFeedback('msg-reply-feedback', `Error: ${e.message}`, true);
+  } finally {
+    el('msg-reply-send').disabled    = false;
+    el('msg-reply-send').textContent = 'Send Reply';
+  }
+}
+
+async function refreshUnreadBadge() {
+  try {
+    const data  = await apiFetch('/api/messages/unread-count');
+    const count = data.data?.count ?? 0;
+    const badge = el('msg-unread-badge');
+    if (count > 0) {
+      badge.textContent  = count;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (_) {
+    el('msg-unread-badge').style.display = 'none';
+  }
+}
+
+// Poll unread badge every 60 s and check immediately on load
+setInterval(refreshUnreadBadge, 60_000);
+refreshUnreadBadge();
