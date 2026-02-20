@@ -56,6 +56,8 @@ Once the server is running, open your browser and navigate to:
 http://localhost:5000
 ```
 
+> **⚠️ Note:** `localhost:5000` is intended for local development only. Do not expose this server directly to the internet without proper security measures (e.g., a reverse proxy, HTTPS, and environment-specific configuration) in a production deployment.
+
 You will see the Packbot interface with a navigation bar across the top containing eight tabs: **Scanner**, **Search**, **Collection**, **History**, **Pack Opening**, **Trades**, **Marketplace**, and **Messages**.
 
 ---
