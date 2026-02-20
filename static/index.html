@@ -17,6 +17,7 @@
     <button class="nav-btn" data-tab="search">Search</button>
     <button class="nav-btn" data-tab="collection">Collection</button>
     <button class="nav-btn" data-tab="history">History</button>
+    <button class="nav-btn" data-tab="pack">&#127873; Pack Opening</button>
   </nav>
 
   <!-- ==================== SCANNER TAB ==================== -->
@@ -128,6 +129,126 @@
     <div id="history-list" class="history-list">
       <p class="placeholder-msg">No scans yet.</p>
     </div>
+  </section>
+
+  <!-- ==================== PACK OPENING TAB ==================== -->
+  <section id="tab-pack" class="tab">
+
+    <!-- ── Step 1: Identify the pack ── -->
+    <div id="pack-step-scan" class="pack-step">
+      <h2 class="pack-step-heading">&#127873; Step 1 &ndash; Identify Your Pack</h2>
+      <div class="pack-id-layout">
+
+        <div class="camera-panel">
+          <div class="video-wrapper">
+            <video id="pack-cam" autoplay playsinline></video>
+            <canvas id="pack-canvas" style="display:none"></canvas>
+          </div>
+          <div class="camera-controls">
+            <button id="pack-btn-start-cam" class="btn-primary">Start Camera</button>
+            <button id="pack-btn-scan-bar" class="btn-secondary" disabled>&#128247; Scan Barcode</button>
+            <button id="pack-btn-stop-cam" disabled>Stop Camera</button>
+          </div>
+          <p id="pack-barcode-status" class="pack-status-msg"></p>
+        </div>
+
+        <div class="pack-id-form">
+          <label>Barcode <small>(auto-filled or enter manually)</small>
+            <input id="pack-barcode-value" type="text" placeholder="e.g. 820650850905" />
+          </label>
+          <label>Set
+            <select id="pack-set-select">
+              <option value="">Select set&hellip;</option>
+            </select>
+          </label>
+          <label>Pack / Product Name <small>(optional)</small>
+            <input id="pack-name-input" type="text" placeholder="e.g. Scarlet &amp; Violet Booster" />
+          </label>
+          <button id="pack-btn-start-session" class="btn-primary" style="margin-top:14px">
+            Start Opening &#8594;
+          </button>
+          <p id="pack-step1-error" class="pack-status-msg error"></p>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Step 2: Open the Pack ── -->
+    <div id="pack-step-opening" class="pack-step" style="display:none">
+      <div class="pack-opening-header">
+        <h2 class="pack-step-heading">&#9654; Step 2 &ndash; Open the Pack</h2>
+        <span id="pack-session-info" class="pack-session-badge"></span>
+      </div>
+      <div class="pack-opening-layout">
+
+        <!-- Camera column -->
+        <div class="pack-cam-col">
+          <div class="video-wrapper" style="position:relative">
+            <video id="pack-opening-feed" autoplay playsinline></video>
+            <canvas id="pack-opening-canvas" style="display:none"></canvas>
+            <div id="pack-toast" class="pack-toast"></div>
+          </div>
+          <div class="camera-controls">
+            <button id="pack-btn-open-cam" class="btn-primary">Start Camera</button>
+            <button id="pack-btn-capture-now" class="btn-secondary" disabled>&#128247; Capture Now</button>
+            <button id="pack-btn-toggle-auto" class="btn-secondary" disabled>&#9654; Auto-Detect</button>
+            <button id="pack-btn-stop-open-cam" disabled>Stop Camera</button>
+          </div>
+          <p id="pack-detect-status" class="pack-status-msg">Start camera and show a card.</p>
+
+          <div class="pack-manual-add">
+            <h4>&#9998; Add Card Manually</h4>
+            <p class="pack-hint-note">
+              Know the card number? Type it below &mdash; set is pre-filled from your pack.
+            </p>
+            <div class="hint-row">
+              <input id="pack-manual-number" type="text" placeholder="Card # (e.g. 4)" />
+              <button id="pack-btn-manual-add" class="btn-secondary">Lookup &amp; Add</button>
+            </div>
+            <p id="pack-manual-status" class="pack-status-msg"></p>
+          </div>
+        </div>
+
+        <!-- Card list column -->
+        <div class="pack-list-col">
+          <div class="pack-list-header">
+            <h3>Cards Found <span id="pack-card-count" class="pack-count-badge">0</span></h3>
+            <button id="pack-btn-done-opening" class="btn-primary">Done Opening &#8594;</button>
+          </div>
+          <div id="pack-card-list">
+            <p class="placeholder-msg">No cards detected yet.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Step 3: Review & Save ── -->
+    <div id="pack-step-review" class="pack-step" style="display:none">
+      <h2 class="pack-step-heading">&#10003; Step 3 &ndash; Review &amp; Save</h2>
+      <div class="pack-review-layout">
+        <div id="pack-review-grid" class="pack-review-grid"></div>
+        <div class="pack-review-sidebar">
+          <p id="pack-review-count" class="pack-review-count"></p>
+          <label class="pack-checkbox-label">
+            <input type="checkbox" id="pack-add-to-col" checked />
+            Add all cards to my collection
+          </label>
+          <label>Condition
+            <select id="pack-review-condition">
+              <option value="NM">NM &ndash; Near Mint</option>
+              <option value="LP">LP &ndash; Lightly Played</option>
+              <option value="MP">MP &ndash; Moderately Played</option>
+              <option value="HP">HP &ndash; Heavily Played</option>
+            </select>
+          </label>
+          <button id="pack-complete-btn" class="btn-primary">Save to Collection</button>
+          <button id="pack-reset-btn" class="btn-secondary">&#8592; Open Another Pack</button>
+          <p id="pack-complete-msg" class="pack-status-msg"></p>
+        </div>
+      </div>
+    </div>
+
   </section>
 
   <!-- Card detail modal -->

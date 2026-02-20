@@ -174,3 +174,33 @@ def scan_from_text(text: str) -> dict:
             }
 
     return result
+
+
+def scan_barcode(data_url: str) -> dict:
+    """Detect a barcode or QR code from a base64 data URL.
+
+    Uses ``pyzbar`` when available (requires ``libzbar0`` system library and
+    ``pip install pyzbar``).  Returns gracefully if pyzbar is not installed.
+
+    Returns a dict with keys:
+        barcode      – decoded string value, or None if nothing detected
+        barcode_type – format name (e.g. "EAN13", "QRCODE"), or None
+    """
+    empty = {"barcode": None, "barcode_type": None}
+    if not data_url:
+        return empty
+    try:
+        from pyzbar.pyzbar import decode as _pyzbar_decode  # lazy – optional dep
+        img = decode_base64_image(data_url)
+        results = _pyzbar_decode(img)
+        if results:
+            best = results[0]
+            return {
+                "barcode": best.data.decode("utf-8", errors="replace"),
+                "barcode_type": best.type,
+            }
+    except ImportError:
+        pass  # pyzbar not installed – barcode scanning unavailable
+    except Exception:
+        pass
+    return empty
