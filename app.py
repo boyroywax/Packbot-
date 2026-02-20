@@ -918,6 +918,153 @@ def messages_delete(message_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Marketplace – round-based trading pools
+# ---------------------------------------------------------------------------
+
+@app.route("/api/marketplace/rounds", methods=["POST"])
+def marketplace_create_round():
+    """Create a new trading round.
+
+    Expects JSON:
+      name         – round title (required)
+      description  – optional description
+      duration_min – round length in minutes (default 60)
+    """
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    description = (data.get("description") or "").strip()
+    duration_min = int(data.get("duration_min", 60))
+    if duration_min < 1:
+        return jsonify({"error": "duration_min must be at least 1"}), 400
+
+    rnd = db.create_trade_round(
+        creator_id=user_id,
+        name=name,
+        description=description,
+        duration_min=duration_min,
+    )
+    return jsonify({"data": rnd}), 201
+
+
+@app.route("/api/marketplace/rounds", methods=["GET"])
+def marketplace_list_rounds():
+    """List trading rounds, optionally filtered by status."""
+    status = request.args.get("status")
+    if status and status not in ("active", "settled"):
+        return jsonify({"error": "status must be 'active' or 'settled'"}), 400
+    limit = min(int(request.args.get("limit", 50)), 200)
+    rounds = db.list_trade_rounds(status=status, limit=limit)
+    return jsonify({"data": rounds})
+
+
+@app.route("/api/marketplace/rounds/<int:round_id>", methods=["GET"])
+def marketplace_get_round(round_id: int):
+    """Return a single round with its offers."""
+    rnd = db.get_trade_round(round_id)
+    if not rnd:
+        return jsonify({"error": "Round not found"}), 404
+    rnd["offers"] = db.list_trade_offers(round_id)
+    return jsonify({"data": rnd})
+
+
+@app.route("/api/marketplace/rounds/<int:round_id>/offers", methods=["POST"])
+def marketplace_create_offer(round_id: int):
+    """Submit a trade offer in a round.
+
+    Expects JSON:
+      offer_card_id   – card you are offering (required)
+      request_card_id – card you want in return (required)
+    """
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    rnd = db.get_trade_round(round_id)
+    if not rnd:
+        return jsonify({"error": "Round not found"}), 404
+    if rnd["status"] != "active":
+        return jsonify({"error": "Round is no longer active"}), 400
+
+    data = request.get_json(force=True, silent=True) or {}
+    offer_card = (data.get("offer_card_id") or "").strip()
+    request_card = (data.get("request_card_id") or "").strip()
+    if not offer_card or not request_card:
+        return jsonify({"error": "offer_card_id and request_card_id are required"}), 400
+
+    offer = db.create_trade_offer(
+        round_id=round_id,
+        offerer_id=user_id,
+        offer_card_id=offer_card,
+        request_card_id=request_card,
+    )
+    return jsonify({"data": offer}), 201
+
+
+@app.route("/api/marketplace/rounds/<int:round_id>/offers/<int:offer_id>/accept", methods=["POST"])
+def marketplace_accept_offer(round_id: int, offer_id: int):
+    """Accept an open trade offer."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    offer = db.get_trade_offer(offer_id)
+    if not offer or offer["round_id"] != round_id:
+        return jsonify({"error": "Offer not found"}), 404
+    if offer["status"] != "open":
+        return jsonify({"error": "Offer is no longer open"}), 400
+    if offer["offerer_id"] == user_id:
+        return jsonify({"error": "Cannot accept your own offer"}), 400
+
+    updated = db.accept_trade_offer(offer_id, accepted_by=user_id)
+    return jsonify({"data": updated})
+
+
+@app.route("/api/marketplace/rounds/<int:round_id>/offers/<int:offer_id>", methods=["DELETE"])
+def marketplace_withdraw_offer(round_id: int, offer_id: int):
+    """Withdraw an open trade offer (only the offerer can do this)."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    offer = db.get_trade_offer(offer_id)
+    if not offer or offer["round_id"] != round_id:
+        return jsonify({"error": "Offer not found"}), 404
+    if offer["offerer_id"] != user_id:
+        return jsonify({"error": "Only the offerer can withdraw"}), 403
+    if offer["status"] != "open":
+        return jsonify({"error": "Offer is no longer open"}), 400
+
+    db.withdraw_trade_offer(offer_id)
+    return jsonify({"success": True})
+
+
+@app.route("/api/marketplace/rounds/<int:round_id>/settle", methods=["POST"])
+def marketplace_settle_round(round_id: int):
+    """Settle a trading round (only the creator can do this)."""
+    user_id = _current_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+
+    rnd = db.get_trade_round(round_id)
+    if not rnd:
+        return jsonify({"error": "Round not found"}), 404
+    if rnd["creator_id"] != user_id:
+        return jsonify({"error": "Only the round creator can settle"}), 403
+    if rnd["status"] != "active":
+        return jsonify({"error": "Round is already settled"}), 400
+
+    settled = db.settle_trade_round(round_id)
+    return jsonify({"data": settled})
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 

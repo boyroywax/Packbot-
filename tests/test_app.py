@@ -1794,5 +1794,269 @@ class TestMessageRoutes(_AppTestMixin, unittest.TestCase):
         self.assertEqual(after, 0)
 
 
+# ======================================================================
+# Marketplace – round-based trading pool routes
+# ======================================================================
+
+class TestMarketplaceRoutes(_AppTestMixin, unittest.TestCase):
+    """Tests for /api/marketplace/rounds/* endpoints."""
+
+    def _ensure_card(self, api_key, card_id="base1-4"):
+        """Ensure a card exists in the DB by adding it to a collection."""
+        with patch("app.tcg_api.get_card", return_value=FAKE_CARD):
+            self.client.post("/api/collection",
+                             json={"card_id": card_id},
+                             headers={"X-Api-Key": api_key})
+
+    def _create_round(self, api_key, name="Test Round", duration_min=60):
+        return self.client.post("/api/marketplace/rounds",
+                                json={"name": name, "duration_min": duration_min},
+                                headers={"X-Api-Key": api_key})
+
+    # ------------------------------------------------------------------
+    # POST /api/marketplace/rounds
+    # ------------------------------------------------------------------
+
+    def test_create_round_requires_auth(self):
+        resp = self.client.post("/api/marketplace/rounds", json={"name": "Test"})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_create_round_requires_name(self):
+        user = self._make_user("ash")
+        resp = self.client.post("/api/marketplace/rounds",
+                                json={},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_round_success(self):
+        user = self._make_user("ash")
+        resp = self._create_round(user["api_key"])
+        self.assertEqual(resp.status_code, 201)
+        data = resp.get_json()["data"]
+        self.assertEqual(data["name"], "Test Round")
+        self.assertEqual(data["status"], "active")
+        self.assertEqual(data["duration_min"], 60)
+
+    def test_create_round_invalid_duration(self):
+        user = self._make_user("ash")
+        resp = self.client.post("/api/marketplace/rounds",
+                                json={"name": "Bad", "duration_min": 0},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    # ------------------------------------------------------------------
+    # GET /api/marketplace/rounds
+    # ------------------------------------------------------------------
+
+    def test_list_rounds_empty(self):
+        resp = self.client.get("/api/marketplace/rounds")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["data"], [])
+
+    def test_list_rounds_returns_created(self):
+        user = self._make_user("ash")
+        self._create_round(user["api_key"], "Round 1")
+        resp = self.client.get("/api/marketplace/rounds")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.get_json()["data"]), 1)
+
+    def test_list_rounds_filter_by_status(self):
+        user = self._make_user("ash")
+        self._create_round(user["api_key"], "Active Round")
+        resp = self.client.get("/api/marketplace/rounds?status=settled")
+        self.assertEqual(len(resp.get_json()["data"]), 0)
+        resp = self.client.get("/api/marketplace/rounds?status=active")
+        self.assertEqual(len(resp.get_json()["data"]), 1)
+
+    def test_list_rounds_invalid_status(self):
+        resp = self.client.get("/api/marketplace/rounds?status=bogus")
+        self.assertEqual(resp.status_code, 400)
+
+    # ------------------------------------------------------------------
+    # GET /api/marketplace/rounds/<id>
+    # ------------------------------------------------------------------
+
+    def test_get_round_not_found(self):
+        resp = self.client.get("/api/marketplace/rounds/999")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_round_success(self):
+        user = self._make_user("ash")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        resp = self.client.get(f"/api/marketplace/rounds/{rid}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()["data"]
+        self.assertEqual(data["id"], rid)
+        self.assertIn("offers", data)
+
+    # ------------------------------------------------------------------
+    # POST /api/marketplace/rounds/<id>/offers
+    # ------------------------------------------------------------------
+
+    def test_create_offer_requires_auth(self):
+        user = self._make_user("ash")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                                json={"offer_card_id": "base1-4", "request_card_id": "base1-15"})
+        self.assertEqual(resp.status_code, 401)
+
+    def test_create_offer_round_not_found(self):
+        user = self._make_user("ash")
+        resp = self.client.post("/api/marketplace/rounds/999/offers",
+                                json={"offer_card_id": "base1-4", "request_card_id": "base1-15"},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_create_offer_missing_fields(self):
+        user = self._make_user("ash")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                                json={},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_offer_success(self):
+        user = self._make_user("ash")
+        self._ensure_card(user["api_key"], "base1-4")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                                json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.get_json()["data"]["status"], "open")
+
+    # ------------------------------------------------------------------
+    # POST /api/marketplace/rounds/<id>/offers/<id>/accept
+    # ------------------------------------------------------------------
+
+    def test_accept_offer_requires_auth(self):
+        user = self._make_user("ash")
+        self._ensure_card(user["api_key"])
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        oid = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                               json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                               headers={"X-Api-Key": user["api_key"]}).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers/{oid}/accept")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_cannot_accept_own_offer(self):
+        user = self._make_user("ash")
+        self._ensure_card(user["api_key"])
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        oid = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                               json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                               headers={"X-Api-Key": user["api_key"]}).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers/{oid}/accept",
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_accept_offer_success(self):
+        ash = self._make_user("ash")
+        misty = self._make_user("misty")
+        self._ensure_card(ash["api_key"])
+        rid = self._create_round(ash["api_key"]).get_json()["data"]["id"]
+        oid = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                               json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                               headers={"X-Api-Key": ash["api_key"]}).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers/{oid}/accept",
+                                headers={"X-Api-Key": misty["api_key"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["data"]["status"], "accepted")
+
+    # ------------------------------------------------------------------
+    # DELETE /api/marketplace/rounds/<id>/offers/<id>
+    # ------------------------------------------------------------------
+
+    def test_withdraw_offer_only_offerer(self):
+        ash = self._make_user("ash")
+        misty = self._make_user("misty")
+        self._ensure_card(ash["api_key"])
+        rid = self._create_round(ash["api_key"]).get_json()["data"]["id"]
+        oid = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                               json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                               headers={"X-Api-Key": ash["api_key"]}).get_json()["data"]["id"]
+        resp = self.client.delete(f"/api/marketplace/rounds/{rid}/offers/{oid}",
+                                  headers={"X-Api-Key": misty["api_key"]})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_withdraw_offer_success(self):
+        user = self._make_user("ash")
+        self._ensure_card(user["api_key"])
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        oid = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                               json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                               headers={"X-Api-Key": user["api_key"]}).get_json()["data"]["id"]
+        resp = self.client.delete(f"/api/marketplace/rounds/{rid}/offers/{oid}",
+                                  headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 200)
+
+    # ------------------------------------------------------------------
+    # POST /api/marketplace/rounds/<id>/settle
+    # ------------------------------------------------------------------
+
+    def test_settle_requires_auth(self):
+        user = self._make_user("ash")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/settle")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_settle_only_creator(self):
+        ash = self._make_user("ash")
+        misty = self._make_user("misty")
+        rid = self._create_round(ash["api_key"]).get_json()["data"]["id"]
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                                headers={"X-Api-Key": misty["api_key"]})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_settle_round_success(self):
+        ash = self._make_user("ash")
+        misty = self._make_user("misty")
+        self._ensure_card(ash["api_key"])
+        rid = self._create_round(ash["api_key"]).get_json()["data"]["id"]
+        # Add an open offer
+        self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                         json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                         headers={"X-Api-Key": ash["api_key"]})
+        # Settle
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                                headers={"X-Api-Key": ash["api_key"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["data"]["status"], "settled")
+
+    def test_settle_already_settled(self):
+        user = self._make_user("ash")
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                         headers={"X-Api-Key": user["api_key"]})
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_offer_on_settled_round_fails(self):
+        user = self._make_user("ash")
+        self._ensure_card(user["api_key"])
+        rid = self._create_round(user["api_key"]).get_json()["data"]["id"]
+        self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                         headers={"X-Api-Key": user["api_key"]})
+        resp = self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                                json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                                headers={"X-Api-Key": user["api_key"]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_settle_expires_open_offers(self):
+        ash = self._make_user("ash")
+        self._ensure_card(ash["api_key"])
+        rid = self._create_round(ash["api_key"]).get_json()["data"]["id"]
+        self.client.post(f"/api/marketplace/rounds/{rid}/offers",
+                         json={"offer_card_id": "base1-4", "request_card_id": "base1-4"},
+                         headers={"X-Api-Key": ash["api_key"]})
+        self.client.post(f"/api/marketplace/rounds/{rid}/settle",
+                         headers={"X-Api-Key": ash["api_key"]})
+        # Check that offers became expired
+        detail = self.client.get(f"/api/marketplace/rounds/{rid}").get_json()["data"]
+        for o in detail["offers"]:
+            self.assertIn(o["status"], ("expired", "accepted"))
+
+
 if __name__ == "__main__":
     unittest.main()

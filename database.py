@@ -188,6 +188,33 @@ _SQLITE_DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id)",
     "CREATE INDEX IF NOT EXISTS idx_messages_sender    ON messages(sender_id)",
+    """CREATE TABLE IF NOT EXISTS trade_rounds (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        creator_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        duration_min INTEGER NOT NULL DEFAULT 60,
+        status       TEXT NOT NULL DEFAULT 'active',
+        created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ends_at      TEXT NOT NULL,
+        settled_at   TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_tr_creator ON trade_rounds(creator_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tr_status  ON trade_rounds(status)",
+    """CREATE TABLE IF NOT EXISTS trade_offers (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        round_id     INTEGER NOT NULL REFERENCES trade_rounds(id) ON DELETE CASCADE,
+        offerer_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        offer_card_id   TEXT NOT NULL REFERENCES cards(id),
+        request_card_id TEXT NOT NULL REFERENCES cards(id),
+        status       TEXT NOT NULL DEFAULT 'open',
+        accepted_by  INTEGER REFERENCES users(id),
+        created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at  TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_to_round    ON trade_offers(round_id)",
+    "CREATE INDEX IF NOT EXISTS idx_to_offerer  ON trade_offers(offerer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_to_status   ON trade_offers(status)",
 ]
 
 _PG_DDL = [
@@ -293,6 +320,33 @@ _PG_DDL = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id)",
     "CREATE INDEX IF NOT EXISTS idx_messages_sender    ON messages(sender_id)",
+    """CREATE TABLE IF NOT EXISTS trade_rounds (
+        id           SERIAL PRIMARY KEY,
+        creator_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name         TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        duration_min INTEGER NOT NULL DEFAULT 60,
+        status       TEXT NOT NULL DEFAULT 'active',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        ends_at      TIMESTAMPTZ NOT NULL,
+        settled_at   TIMESTAMPTZ
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_tr_creator ON trade_rounds(creator_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tr_status  ON trade_rounds(status)",
+    """CREATE TABLE IF NOT EXISTS trade_offers (
+        id           SERIAL PRIMARY KEY,
+        round_id     INTEGER NOT NULL REFERENCES trade_rounds(id) ON DELETE CASCADE,
+        offerer_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        offer_card_id   TEXT NOT NULL REFERENCES cards(id),
+        request_card_id TEXT NOT NULL REFERENCES cards(id),
+        status       TEXT NOT NULL DEFAULT 'open',
+        accepted_by  INTEGER REFERENCES users(id),
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at  TIMESTAMPTZ
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_to_round    ON trade_offers(round_id)",
+    "CREATE INDEX IF NOT EXISTS idx_to_offerer  ON trade_offers(offerer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_to_status   ON trade_offers(status)",
 ]
 
 
@@ -1101,6 +1155,178 @@ def get_trade_matches(user_id: int) -> dict:
         "you_have_they_want": [dict(r) for r in yours],
         "they_have_you_want": [dict(r) for r in theirs],
     }
+
+
+# ---------------------------------------------------------------------------
+# Marketplace – round-based trading pools
+# ---------------------------------------------------------------------------
+
+def create_trade_round(
+    creator_id: int,
+    name: str,
+    description: str = "",
+    duration_min: int = 60,
+) -> dict:
+    """Create a new trading round and return the row."""
+    now = datetime.now(timezone.utc)
+    ends_at = now + timedelta(minutes=duration_min)
+    ends_str = ends_at.isoformat()
+    with get_db() as conn:
+        _exec(
+            conn,
+            """INSERT INTO trade_rounds
+               (creator_id, name, description, duration_min, ends_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (creator_id, name, description, duration_min, ends_str),
+        )
+        if _is_pg():
+            row = _exec(conn, "SELECT * FROM trade_rounds WHERE id = lastval()").fetchone()
+        else:
+            row = _exec(conn, "SELECT * FROM trade_rounds WHERE id = last_insert_rowid()").fetchone()
+    return dict(row) if row else {}
+
+
+def get_trade_round(round_id: int) -> Optional[dict]:
+    """Return a single trade round by id with creator username."""
+    with get_db() as conn:
+        row = _exec(
+            conn,
+            """SELECT tr.*, u.username AS creator_username
+               FROM trade_rounds tr
+               JOIN users u ON u.id = tr.creator_id
+               WHERE tr.id = ?""",
+            (round_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_trade_rounds(status: Optional[str] = None, limit: int = 50) -> list:
+    """Return trade rounds, optionally filtered by status, newest first."""
+    with get_db() as conn:
+        if status:
+            rows = _exec(
+                conn,
+                """SELECT tr.*, u.username AS creator_username
+                   FROM trade_rounds tr
+                   JOIN users u ON u.id = tr.creator_id
+                   WHERE tr.status = ?
+                   ORDER BY tr.created_at DESC LIMIT ?""",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = _exec(
+                conn,
+                """SELECT tr.*, u.username AS creator_username
+                   FROM trade_rounds tr
+                   JOIN users u ON u.id = tr.creator_id
+                   ORDER BY tr.created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_trade_offer(
+    round_id: int,
+    offerer_id: int,
+    offer_card_id: str,
+    request_card_id: str,
+) -> dict:
+    """Insert a trade offer into a round and return the row."""
+    with get_db() as conn:
+        _exec(
+            conn,
+            """INSERT INTO trade_offers
+               (round_id, offerer_id, offer_card_id, request_card_id)
+               VALUES (?, ?, ?, ?)""",
+            (round_id, offerer_id, offer_card_id, request_card_id),
+        )
+        if _is_pg():
+            row = _exec(conn, "SELECT * FROM trade_offers WHERE id = lastval()").fetchone()
+        else:
+            row = _exec(conn, "SELECT * FROM trade_offers WHERE id = last_insert_rowid()").fetchone()
+    return dict(row) if row else {}
+
+
+def get_trade_offer(offer_id: int) -> Optional[dict]:
+    """Return a trade offer by id."""
+    with get_db() as conn:
+        row = _exec(conn, "SELECT * FROM trade_offers WHERE id = ?", (offer_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_trade_offers(round_id: int) -> list:
+    """Return all offers in a round with card and user details."""
+    with get_db() as conn:
+        rows = _exec(
+            conn,
+            """SELECT  tof.*,
+                       u.username   AS offerer_username,
+                       oc.name      AS offer_card_name,
+                       oc.image_small AS offer_card_image,
+                       oc.set_name  AS offer_card_set,
+                       rc.name      AS request_card_name,
+                       rc.image_small AS request_card_image,
+                       rc.set_name  AS request_card_set
+               FROM    trade_offers tof
+               JOIN    users u  ON u.id  = tof.offerer_id
+               JOIN    cards oc ON oc.id = tof.offer_card_id
+               JOIN    cards rc ON rc.id = tof.request_card_id
+               WHERE   tof.round_id = ?
+               ORDER BY tof.created_at DESC""",
+            (round_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def accept_trade_offer(offer_id: int, accepted_by: int) -> Optional[dict]:
+    """Mark an offer as accepted. Returns the updated row or None."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        _exec(
+            conn,
+            """UPDATE trade_offers
+               SET status = 'accepted', accepted_by = ?, resolved_at = ?
+               WHERE id = ? AND status = 'open'""",
+            (accepted_by, now, offer_id),
+        )
+        row = _exec(conn, "SELECT * FROM trade_offers WHERE id = ?", (offer_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def withdraw_trade_offer(offer_id: int) -> bool:
+    """Cancel an open offer. Returns True if updated."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        cur = _exec(
+            conn,
+            """UPDATE trade_offers
+               SET status = 'withdrawn', resolved_at = ?
+               WHERE id = ? AND status = 'open'""",
+            (now, offer_id),
+        )
+        return cur.rowcount > 0
+
+
+def settle_trade_round(round_id: int) -> Optional[dict]:
+    """Settle a round: mark remaining open offers as expired, round as settled."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as conn:
+        _exec(
+            conn,
+            """UPDATE trade_offers
+               SET status = 'expired', resolved_at = ?
+               WHERE round_id = ? AND status = 'open'""",
+            (now, round_id),
+        )
+        _exec(
+            conn,
+            """UPDATE trade_rounds
+               SET status = 'settled', settled_at = ?
+               WHERE id = ? AND status = 'active'""",
+            (now, round_id),
+        )
+        row = _exec(conn, "SELECT * FROM trade_rounds WHERE id = ?", (round_id,)).fetchone()
+    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
